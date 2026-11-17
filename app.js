@@ -35,7 +35,7 @@
   }
 
   const state = {
-    settings: { mode: "random", timerBase: "end", showTitle: true, ...loadJSON(LS_SETTINGS, {}) },
+    settings: { mode: "random", timerBase: "end", showTitle: true, recordAnswers: false, ...loadJSON(LS_SETTINGS, {}) },
     local: loadJSON(LS_HISTORY, []),   // この端末に保存した記録
     history: [],                       // 画面に表示する記録(ログイン中=アカウント / 未ログイン=端末)
     user: null,
@@ -215,8 +215,19 @@
     } catch (e) { console.warn(e); setTimeout(once, 1500); }
   }
 
+  // iPhone などでは、タップした瞬間に音声の再生を解禁しておく必要がある
+  function unlockAll() {
+    unlockSpeech();
+    if (!state.unlocked) {
+      state.unlocked = true;
+      audio.src = SILENT_WAV;
+      audio.play().catch(() => {});
+    }
+  }
+
   function play(q) {
     stopAudio();
+    discardAnswerRec();   // 「もう一度聞く」の時は、そこまでの録音を捨てて録り直す
     const token = state.token;
     let fellBack = false, watch = null;
     state.current = q;
@@ -227,6 +238,7 @@
       clearTimeout(watch);
       if (token !== state.token) return;
       setPhase("answering");
+      startAnswerRec(token);
       if (state.settings.timerBase === "end") startTimer();
     };
     // 音声を再生できなかった時: 質問文を表示して読み上げ、止まらずに回答へ進む
@@ -249,12 +261,8 @@
     resetTimer();
     if (state.settings.timerBase === "start") startTimer();
 
-    unlockSpeech();
-    if (!state.unlocked) {
-      state.unlocked = true;
-      audio.src = SILENT_WAV;
-      audio.play().catch(() => {});
-    }
+    unlockAll();
+    if (state.settings.recordAnswers) ensureMic();
 
     resolveAudioUrl(q).then((url) => {
       if (token !== state.token) return;
@@ -270,6 +278,166 @@
       watch = setTimeout(() => fallback("読み込みの時間切れ"), 10000);
       audio.play().catch((e) => fallback(e && e.name === "NotAllowedError" ? "再生が許可されませんでした" : "再生を開始できません"));
     }).catch((e) => fallback("音声のURLを取得できません"));
+  }
+
+  /* ========== 回答の録音と聞き返し(録音はこの端末のメモリだけ。サーバーには送らない) ========== */
+  const ans = { stream: null, micP: null, denied: false, recorder: null, chunks: [], mime: "", startP: null, items: [] };
+  const micSupported = () => !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+
+  function ensureMic() {
+    if (ans.stream && ans.stream.active) return Promise.resolve(true);
+    if (ans.denied) return Promise.resolve(false);
+    if (ans.micP) return ans.micP;
+    if (!micSupported()) {
+      ans.denied = true;
+      notify("この環境では録音できないため、録音せずに続けます");
+      return Promise.resolve(false);
+    }
+    ans.micP = navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((s) => { ans.stream = s; return true; })
+      .catch((err) => {
+        console.warn(err);
+        ans.denied = true;
+        notify("マイクを使えなかったため、録音せずに続けます(ブラウザのマイク許可を確認してください)");
+        return false;
+      })
+      .finally(() => { ans.micP = null; });
+    return ans.micP;
+  }
+
+  function releaseMic() {
+    if (ans.stream) ans.stream.getTracks().forEach((t) => t.stop());   // スマホの録音中表示を消す
+    ans.stream = null;
+  }
+
+  // 回答の録音を始める(質問の再生が終わって「回答してください」になった時)
+  function startAnswerRec(token) {
+    discardAnswerRec();
+    if (!state.settings.recordAnswers) return;
+    ans.startP = ensureMic().then((ok) => {
+      if (!ok || token !== state.token || state.phase !== "answering") return;
+      const mime = pickRecMime();
+      const r = new MediaRecorder(ans.stream, mime ? { mimeType: mime } : undefined);
+      ans.chunks = []; ans.mime = mime; ans.recorder = r;
+      r.ondataavailable = (ev) => { if (ev.data && ev.data.size) ans.chunks.push(ev.data); };
+      r.start();
+    }).catch((e) => console.warn("録音を開始できません", e));
+  }
+
+  // 録音を止めて、音声データ(Blob)を返す。録っていなければ null
+  async function stopAnswerRec() {
+    try { await ans.startP; } catch (_) {}
+    const r = ans.recorder;
+    ans.recorder = null;
+    if (!r || r.state === "inactive") return null;
+    return new Promise((resolve) => {
+      let done = false;
+      const fin = () => {
+        if (done) return; done = true;
+        const blob = new Blob(ans.chunks, { type: r.mimeType || ans.mime || "audio/mp4" });
+        ans.chunks = [];
+        resolve(blob.size ? blob : null);
+      };
+      r.onstop = fin;
+      setTimeout(fin, 2000);
+      try { r.stop(); } catch (_) { fin(); }
+    });
+  }
+
+  // 録音中のものを、保存せずに捨てる
+  function discardAnswerRec() {
+    const r = ans.recorder;
+    ans.recorder = null; ans.startP = null; ans.chunks = [];
+    if (r) {
+      r.ondataavailable = null; r.onstop = null;
+      try { if (r.state !== "inactive") r.stop(); } catch (_) {}
+    }
+  }
+
+  // 録音データを、すべて消す(再生用のURLも解放する)
+  function clearAnswerData() {
+    discardAnswerRec();
+    releaseMic();
+    ans.items.forEach((it) => URL.revokeObjectURL(it.url));
+    ans.items = [];
+    ans.denied = false;
+  }
+
+  const reviewOpen = () => !$("#review").hidden;
+  const beforeUnload = (e) => { e.preventDefault(); e.returnValue = ""; };
+
+  function openReview() {
+    if (!ans.items.length) return;
+    const list = $("#reviewList");
+    list.textContent = "";
+    ans.items.forEach((it, i) => {
+      const li = document.createElement("li");
+      const t = document.createElement("p"); t.className = "rt"; t.textContent = `${i + 1}. ${it.title}`;
+      const s = document.createElement("p"); s.className = "rs"; s.textContent = `回答時間 ${fmt(it.seconds)}`;
+      const au = document.createElement("audio");
+      au.controls = true; au.preload = "metadata"; au.setAttribute("playsinline", ""); au.src = it.url;
+      li.append(t, s, au);
+      list.append(li);
+    });
+    $("#reviewConfirm").hidden = true;
+    setReviewInert(false);
+    $("#review").hidden = false;
+    document.body.style.overflow = "hidden";
+    document.querySelector("header.top").inert = true;
+    document.querySelector("main").inert = true;
+    window.addEventListener("beforeunload", beforeUnload);
+    $("#reviewClose").focus();
+  }
+
+  const setReviewInert = (v) => { $("#review > .review-box").inert = v; };
+  const pauseReviewAudio = () => $("#reviewList").querySelectorAll("audio").forEach((a) => a.pause());
+
+  function closeReviewAndDelete() {
+    pauseReviewAudio();
+    $("#reviewList").querySelectorAll("audio").forEach((a) => { a.removeAttribute("src"); a.load(); });
+    $("#reviewList").textContent = "";
+    clearAnswerData();
+    $("#review").hidden = true;
+    $("#reviewConfirm").hidden = true;
+    document.body.style.overflow = "";
+    document.querySelector("header.top").inert = false;
+    document.querySelector("main").inert = false;
+    window.removeEventListener("beforeunload", beforeUnload);
+  }
+
+  function bindReviewUI() {
+    // 閉じる → 確認を出す(まだ消さない)
+    $("#reviewClose").onclick = () => {
+      pauseReviewAudio();
+      setReviewInert(true);
+      $("#reviewConfirm").hidden = false;
+      $("#reviewCancel").focus();
+    };
+    // キャンセル → 消さずに、聞き返しの画面へ戻る
+    $("#reviewCancel").onclick = () => {
+      $("#reviewConfirm").hidden = true;
+      setReviewInert(false);
+      $("#reviewClose").focus();
+    };
+    // 削除して閉じる → ここで初めて削除して閉じる
+    $("#reviewDelete").onclick = closeReviewAndDelete;
+    // 1つ再生したら、ほかは止める
+    $("#reviewList").addEventListener("play", (e) => {
+      $("#reviewList").querySelectorAll("audio").forEach((a) => { if (a !== e.target) a.pause(); });
+    }, true);
+    // Esc では閉じない。Tab キーの移動は、前面の画面の中だけにする
+    document.addEventListener("keydown", (e) => {
+      if (!reviewOpen()) return;
+      if (e.key === "Escape") { e.preventDefault(); return; }
+      if (e.key !== "Tab") return;
+      const root = $("#reviewConfirm").hidden ? $("#review > .review-box") : $("#reviewConfirm");
+      const f = [...root.querySelectorAll("button, audio[controls]")].filter((x) => !x.disabled);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (!root.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
   }
 
   /* ========== タイマー ========== */
@@ -368,12 +536,20 @@
     state.justFinished = true;
     setPhase("done");
     switchTab("history");
+    discardAnswerRec(); releaseMic();
+    openReview();          // 録音があれば、聞き返しの画面を(閉じられない形で)出す
   }
 
   async function onNext() {
     if (state.saving) return;
     if (state.phase === "idle" || state.phase === "done") {
       state.justFinished = false;
+      clearAnswerData();
+      if (state.settings.recordAnswers) {
+        unlockAll();                       // マイク許可の確認を待つ間に、タップの効力が切れないよう先に解禁
+        state.saving = true;
+        try { await ensureMic(); } finally { state.saving = false; }
+      }
       resetSession();
       advance();
       return;
@@ -384,14 +560,22 @@
     }
     if (state.phase === "answering") {    // 回答終了 → 時間を止めて記録(自動では次へ進まない)
       const sec = stopTimer();
-      if (sec !== null && state.current) {
-        $("#timer").textContent = fmt(sec);
-        state.saving = true;
-        try { await saveAnswer(state.current, sec); } finally { state.saving = false; }
-      }
+      const cur = state.current;
+      state.saving = true;
+      try {
+        const blob = await stopAnswerRec();
+        if (blob && cur && sec !== null) {
+          ans.items.push({ title: cur.title, seconds: sec, blob, url: URL.createObjectURL(blob) });
+        }
+        if (sec !== null && cur) {
+          $("#timer").textContent = fmt(sec);
+          await saveAnswer(cur, sec);
+        }
+      } finally { state.saving = false; }
       // これが最後の質問だった場合は、保存したあと、自動で記録ページへ移る
       if (state.settings.mode !== "pick" && !hasMore()) { finishSession(); return; }
       setPhase("answered");
+      if (state.settings.mode === "pick") { releaseMic(); openReview(); }   // 1問ずつ出題する時は、その場で聞き返す
       return;
     }
     advance();                            // answered → 次の質問へ
@@ -766,6 +950,7 @@
       // ログアウト時などは、再生・計測を止めて初期状態に戻す
       stopAudio(); resetTimer();
       discardRecording();
+      clearAnswerData();
       state.current = null;
       setPhase("idle");
       switchTab("account");
@@ -949,8 +1134,22 @@
     $("#timerBase").value = state.settings.timerBase;
     $("#showTitle").checked = state.settings.showTitle;
 
-    $("#mode").onchange = (e) => { state.settings.mode = e.target.value; saveJSON(LS_SETTINGS, state.settings); stopAudio(); resetTimer(); state.current = null; setPhase("idle"); };
+    $("#mode").onchange = (e) => { state.settings.mode = e.target.value; saveJSON(LS_SETTINGS, state.settings); stopAudio(); resetTimer(); clearAnswerData(); state.current = null; setPhase("idle"); };
     $("#timerBase").onchange = (e) => { state.settings.timerBase = e.target.value; saveJSON(LS_SETTINGS, state.settings); };
+    $("#recordAnswers").checked = !!state.settings.recordAnswers;
+    $("#recHint").hidden = !state.settings.recordAnswers;
+    $("#recordAnswers").onchange = (e) => {
+      let on = e.target.checked;
+      if (on && !micSupported()) {
+        on = false; e.target.checked = false;
+        notify("この環境では録音できません。https のページ(公開後のURL)で開いてください");
+      }
+      state.settings.recordAnswers = on;
+      saveJSON(LS_SETTINGS, state.settings);
+      $("#recHint").hidden = !on;
+      if (!on) { discardAnswerRec(); releaseMic(); } else { ans.denied = false; }
+    };
+    bindReviewUI();
     $("#showTitle").onchange = (e) => { state.settings.showTitle = e.target.checked; saveJSON(LS_SETTINGS, state.settings); setPhase(state.phase); };
 
     $("#nextBtn").onclick = () => {

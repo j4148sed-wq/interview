@@ -2,7 +2,7 @@
 // ・常にネットワークを先に見に行き(=更新がすぐ反映される)、繋がらない時だけキャッシュを使う
 // ・音声ファイル(Rangeリクエスト)と他サイト(Supabase など)への通信には関与しない
 // 更新してもキャッシュが古いままの時は、下の CACHE の番号を上げる。
-const CACHE = "self-interview-v2";
+const CACHE = "self-interview-v4";
 const SHELL = [
   "./", "index.html", "style.css", "app.js", "config.js", "data/questions.js",
   "terms.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"
@@ -27,7 +27,7 @@ self.addEventListener("fetch", (e) => {
   if (req.headers.has("range") || /\.(mp3|m4a|wav|ogg|webm|aac)$/i.test(url.pathname)) return;
 
   e.respondWith(
-    fetch(req)
+    fetch(req, { cache: "no-cache" })   // ブラウザの一時保存を使わず、毎回サーバーに「更新があるか」を確認する
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();

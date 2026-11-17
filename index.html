@@ -44,6 +44,8 @@
           </select>
         </label>
         <label class="check"><input type="checkbox" id="showTitle" checked> 質問文を表示する</label>
+        <label class="check"><input type="checkbox" id="recordAnswers"> 回答を録音して、終了後に聞き返す</label>
+        <p class="hint" id="recHint" hidden>録音はこの端末のメモリだけに置かれ、サーバーには送られません。聞き返したあと閉じると削除されます。スタート時にマイクの許可が必要です。</p>
       </div>
 
       <div class="stage">
@@ -229,5 +231,24 @@
       window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
     }
   </script>
+
+  <!-- 回答の聞き返し(閉じるには、必ず「削除して閉じる」を押す) -->
+  <div id="review" class="review" role="dialog" aria-modal="true" aria-labelledby="reviewTitle" hidden>
+    <div class="review-box">
+      <h2 id="reviewTitle">回答を聞き返す</h2>
+      <p class="hint">この録音はこの端末のメモリにだけあります。閉じると削除され、元に戻せません。</p>
+      <ol id="reviewList" class="review-list"></ol>
+      <button id="reviewClose" class="primary" type="button">閉じる</button>
+    </div>
+    <div id="reviewConfirm" class="review-confirm" role="alertdialog" aria-modal="true" aria-labelledby="reviewConfirmMsg" hidden>
+      <div class="review-box small">
+        <p id="reviewConfirmMsg"><strong>録音データを削除して閉じますか?</strong><br>削除すると、もう一度聞くことはできません。</p>
+        <div class="review-btns">
+          <button id="reviewDelete" class="danger" type="button">削除して閉じる</button>
+          <button id="reviewCancel" class="ghost" type="button">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
