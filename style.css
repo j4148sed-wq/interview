@@ -206,3 +206,6 @@ select { width: 100%; text-overflow: ellipsis; }
   .qlist li { gap: 8px; padding: 10px; margin-left: calc(var(--d, 0) * 12px); }   /* 深掘りの字下げを、スマホでは小さめに */
   button.del { padding: 8px; }
 }
+
+/* hidden 属性を、display の指定より優先させる(録音ボタンなどが、状態に関係なく全部出てしまう不具合の修正) */
+[hidden] { display: none !important; }
