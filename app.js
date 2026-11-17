@@ -146,18 +146,45 @@
   }
 
   // MP3 が無い/再生できない時の代替(質問文の読み上げ)
-  function speak(text, done) {
-    let called = false, wd;
-    const once = () => { if (called) return; called = true; clearTimeout(wd); done(); };
-    // iPhone などでは、読み上げが始まらない/終わりの通知が来ないことがある。止まらないよう、時間で打ち切る
+  let speechUnlocked = false;
+  const jaVoice = () => {
+    try {
+      const v = speechSynthesis.getVoices();
+      return v.find((x) => x.lang === "ja-JP") || v.find((x) => /^ja/i.test(x.lang)) || null;
+    } catch { return null; }
+  };
+
+  // iPhone の Safari は、ボタンを押した瞬間に一度だけ読み上げを許可しないと、後からの読み上げが無音になる
+  function unlockSpeech() {
+    if (speechUnlocked || !("speechSynthesis" in window)) return;
+    speechUnlocked = true;
+    try {
+      speechSynthesis.getVoices();                    // 声の一覧の読み込みを始めておく
+      const u = new SpeechSynthesisUtterance(" ");
+      u.volume = 0;
+      u.lang = "ja-JP";
+      speechSynthesis.speak(u);
+    } catch (e) { console.warn(e); }
+  }
+
+  // onSilent: 2.5秒たっても読み上げが始まらない時に呼ばれる(音量・消音スイッチ・日本語音声の案内用)
+  function speak(text, done, onSilent) {
+    let called = false, started = false, wd, sw;
+    const once = () => { if (called) return; called = true; clearTimeout(wd); clearTimeout(sw); done(); };
+    // 読み上げが始まらない/終わりの通知が来ない端末でも止まらないよう、時間で打ち切る
     wd = setTimeout(once, Math.max(3000, text.length * 400 + 2000));
-    if (!("speechSynthesis" in window)) { setTimeout(once, 1500); return; }
+    if (!("speechSynthesis" in window)) { if (onSilent) onSilent(); setTimeout(once, 1500); return; }
     try {
       const u = new SpeechSynthesisUtterance(text);
       u.lang = "ja-JP";
+      const v = jaVoice();
+      if (v) u.voice = v;
+      u.onstart = () => { started = true; };
       u.onend = once;
       u.onerror = once;
-      speechSynthesis.speak(u);
+      speechSynthesis.cancel();                       // 残っている読み上げを消す。直後の speak は iPhone で無視されることがあるので、少し待つ
+      setTimeout(() => { try { speechSynthesis.speak(u); } catch (e) { once(); } }, 80);
+      sw = setTimeout(() => { if (!started && onSilent) onSilent(); }, 2500);
     } catch (e) { console.warn(e); setTimeout(once, 1500); }
   }
 
@@ -185,12 +212,17 @@
       state.forceTitle = true;
       $("#qtitle").textContent = q.title;
       $("#status").textContent = `音声を再生できませんでした(${why})。質問文を読み上げます…`;
-      speak(q.title, finish);
+      speak(q.title, finish, () => {
+        if (token === state.token && state.phase === "playing") {
+          $("#status").textContent = "読み上げが始まりません。端末の音量・消音スイッチ・日本語の音声を確認してください";
+        }
+      });
     };
 
     resetTimer();
     if (state.settings.timerBase === "start") startTimer();
 
+    unlockSpeech();
     if (!state.unlocked) {
       state.unlocked = true;
       audio.src = SILENT_WAV;
