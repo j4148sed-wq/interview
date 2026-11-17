@@ -41,6 +41,7 @@
     user: null,
     authReady: false,                  // ログイン状態の確認が終わったか
     userQuestions: [],                 // 自分で追加した質問
+    forceTitle: false,                 // 音声が再生できなかった時は、設定に関係なく質問文を表示する
     isAdmin: false,                    // 責任者か
     redemptions: [],                   // 使用済みの招待コード
     adminRows: [],                     // 責任者画面の一覧
@@ -139,35 +140,51 @@
     state.token++;
     audio.onended = null;
     audio.onerror = null;
+    audio.onplaying = null;
     audio.pause();
     if ("speechSynthesis" in window) speechSynthesis.cancel();
   }
 
   // MP3 が無い/再生できない時の代替(質問文の読み上げ)
   function speak(text, done) {
-    if (!("speechSynthesis" in window)) { setTimeout(done, 1500); return; }
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "ja-JP";
-    u.onend = done;
-    u.onerror = done;
-    speechSynthesis.speak(u);
+    let called = false, wd;
+    const once = () => { if (called) return; called = true; clearTimeout(wd); done(); };
+    // iPhone などでは、読み上げが始まらない/終わりの通知が来ないことがある。止まらないよう、時間で打ち切る
+    wd = setTimeout(once, Math.max(3000, text.length * 400 + 2000));
+    if (!("speechSynthesis" in window)) { setTimeout(once, 1500); return; }
+    try {
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "ja-JP";
+      u.onend = once;
+      u.onerror = once;
+      speechSynthesis.speak(u);
+    } catch (e) { console.warn(e); setTimeout(once, 1500); }
   }
 
   function play(q) {
     stopAudio();
     const token = state.token;
-    let fellBack = false;
+    let fellBack = false, watch = null;
     state.current = q;
+    state.forceTitle = false;
     setPhase("playing");
 
     const finish = () => {
+      clearTimeout(watch);
       if (token !== state.token) return;
       setPhase("answering");
       if (state.settings.timerBase === "end") startTimer();
     };
-    const fallback = () => {
+    // 音声を再生できなかった時: 質問文を表示して読み上げ、止まらずに回答へ進む
+    const fallback = (why) => {
       if (fellBack || token !== state.token) return;
       fellBack = true;
+      clearTimeout(watch);
+      console.warn("音声の再生に失敗:", why, audio.error);
+      audio.onended = null; audio.onerror = null; audio.onplaying = null;
+      state.forceTitle = true;
+      $("#qtitle").textContent = q.title;
+      $("#status").textContent = `音声を再生できませんでした(${why})。質問文を読み上げます…`;
       speak(q.title, finish);
     };
 
@@ -182,12 +199,18 @@
 
     resolveAudioUrl(q).then((url) => {
       if (token !== state.token) return;
-      if (!url) { fallback(); return; }
+      if (!url) { fallback("音声のURLを取得できません"); return; }
       audio.onended = finish;
-      audio.onerror = fallback;
+      audio.onerror = () => fallback("ファイルが無い、または形式に未対応");
+      audio.onplaying = () => {
+        clearTimeout(watch);
+        const d = audio.duration;   // 終了の通知が来ない場合に備えて、長さ+3秒で次へ進む
+        if (isFinite(d) && d > 0) watch = setTimeout(finish, (d + 3) * 1000);
+      };
       audio.src = url;
-      audio.play().catch(fallback);
-    });
+      watch = setTimeout(() => fallback("読み込みの時間切れ"), 10000);
+      audio.play().catch((e) => fallback(e && e.name === "NotAllowedError" ? "再生が許可されませんでした" : "再生を開始できません"));
+    }).catch((e) => fallback("音声のURLを取得できません"));
   }
 
   /* ========== タイマー ========== */
@@ -220,7 +243,7 @@
     const next = $("#nextBtn");
     const title = $("#qtitle");
 
-    title.textContent = q && state.settings.showTitle && phase !== "done" ? q.title : "";
+    title.textContent = q && (state.settings.showTitle || state.forceTitle) && phase !== "done" ? q.title : "";
     $("#replayBtn").hidden = !(q && (phase === "playing" || phase === "answering"));
     next.classList.toggle("next", phase === "answered");
 
