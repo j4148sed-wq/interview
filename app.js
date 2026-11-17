@@ -285,6 +285,7 @@
   const micSupported = () => !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
 
   function ensureMic() {
+    if (!$("#review")) return Promise.resolve(false);
     if (ans.stream && ans.stream.active) return Promise.resolve(true);
     if (ans.denied) return Promise.resolve(false);
     if (ans.micP) return ans.micP;
@@ -367,7 +368,7 @@
   const beforeUnload = (e) => { e.preventDefault(); e.returnValue = ""; };
 
   function openReview() {
-    if (!ans.items.length) return;
+    if (!ans.items.length || !$("#review")) return;
     const list = $("#reviewList");
     list.textContent = "";
     ans.items.forEach((it, i) => {
@@ -1136,6 +1137,8 @@
 
     $("#mode").onchange = (e) => { state.settings.mode = e.target.value; saveJSON(LS_SETTINGS, state.settings); stopAudio(); resetTimer(); clearAnswerData(); state.current = null; setPhase("idle"); };
     $("#timerBase").onchange = (e) => { state.settings.timerBase = e.target.value; saveJSON(LS_SETTINGS, state.settings); };
+    // index.html が古いままでも、画面全体が止まらないようにする
+    if ($("#recordAnswers") && $("#recHint")) {
     $("#recordAnswers").checked = !!state.settings.recordAnswers;
     $("#recHint").hidden = !state.settings.recordAnswers;
     $("#recordAnswers").onchange = (e) => {
@@ -1149,7 +1152,8 @@
       $("#recHint").hidden = !on;
       if (!on) { discardAnswerRec(); releaseMic(); } else { ans.denied = false; }
     };
-    bindReviewUI();
+    }
+    if ($("#review")) bindReviewUI();
     $("#showTitle").onchange = (e) => { state.settings.showTitle = e.target.checked; saveJSON(LS_SETTINGS, state.settings); setPhase(state.phase); };
 
     $("#nextBtn").onclick = () => {
@@ -1202,6 +1206,6 @@
     setPhase("idle");
   }
 
-  init();
+  try { init(); } catch (e) { console.error("init failed", e); }   // 何かで失敗しても、ログイン処理は必ず動かす
   initAuth();
 })();
