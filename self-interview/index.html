@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f3a34">
+  <meta name="description" content="録音した質問を流して、回答時間を記録する面接練習アプリ">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="面接練習">
+  <title>セルフ面接練習</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="locked">
+  <header class="top">
+    <h1>セルフ面接練習</h1>
+    <nav class="tabs" role="tablist">
+      <button class="tab" data-tab="practice" role="tab">練習</button>
+      <button class="tab" data-tab="list" role="tab">質問一覧</button>
+      <button class="tab" data-tab="history" role="tab">記録</button>
+      <button class="tab active" data-tab="account" role="tab">設定</button>
+      <button class="tab" data-tab="admin" role="tab" hidden>責任者</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- 練習 -->
+    <section id="view-practice" class="view">
+      <div class="settings">
+        <label>出題モード
+          <select id="mode">
+            <option value="random">ランダム(深掘りあり)</option>
+            <option value="sequential">順番</option>
+            <option value="pick">選んで出題</option>
+          </select>
+        </label>
+        <label>計測の起点
+          <select id="timerBase">
+            <option value="end">質問の再生終了から</option>
+            <option value="start">質問の再生開始から</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="showTitle" checked> 質問文を表示する</label>
+      </div>
+
+      <div class="stage">
+        <p id="status" class="status">スタートを押すと最初の質問が流れます</p>
+        <p id="qtitle" class="qtitle"></p>
+        <p id="timer" class="timer" aria-live="off">0:00.0</p>
+      </div>
+
+      <div class="actions">
+        <button id="nextBtn" class="primary">スタート</button>
+        <button id="replayBtn" class="ghost" hidden>もう一度聞く</button>
+      </div>
+      <p id="notice" class="notice" role="status" aria-live="polite"></p>
+    </section>
+
+    <!-- 質問一覧 -->
+    <section id="view-list" class="view">
+      <p class="hint">▶ を押すと、その質問だけを出題します。字下げは「深掘り質問」を表します。</p>
+
+      <h2>標準の質問</h2>
+      <ul id="list" class="qlist"></ul>
+
+      <h2>自分の質問</h2>
+      <ul id="myList" class="qlist"></ul>
+
+      <div class="card">
+        <h2>質問を追加する</h2>
+        <form id="addForm" class="fields">
+          <label>質問文
+            <input id="qTitle" type="text" maxlength="100" required placeholder="例: 学生時代に力を入れたことは?">
+          </label>
+          <label>親の質問(選ぶと、その深掘り質問として出題されます)
+            <select id="qParent"></select>
+          </label>
+          <div class="rec">
+            <label>音声ファイルを選ぶ(MP3・M4Aなど / 10MBまで)
+              <input id="qFile" type="file" accept="audio/*,.mp3,.m4a">
+            </label>
+            <p class="or">または、その場で録音する</p>
+            <button type="button" id="recStart" class="ghost">● 録音する</button>
+            <div id="recStopWrap" class="rec-row" hidden>
+              <button type="button" id="recStop" class="primary rec-on">■ 録音を止める</button>
+              <span id="recTime" class="rec-time">0:00.0</span>
+            </div>
+            <div id="recDone" hidden>
+              <audio id="recPreview" controls></audio>
+              <button type="button" id="recRedo" class="ghost">録り直す</button>
+            </div>
+          </div>
+          <button type="submit" id="addBtn" class="primary">質問を追加</button>
+        </form>
+        <p id="addMsg" class="notice" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <!-- 記録 -->
+    <section id="view-history" class="view">
+      <p id="historySource" class="hint"></p>
+      <h2>質問ごとの平均回答時間</h2>
+      <ul id="stats" class="stats"></ul>
+      <h2>最近の記録</h2>
+      <ul id="recent" class="recent"></ul>
+      <button id="clearHistory" class="ghost danger">記録をすべて削除</button>
+    </section>
+
+    <!-- アカウント -->
+    <section id="view-account" class="view active">
+      <p id="accountLoading" class="notice">読み込み中…</p>
+
+      <div id="accountSetup" class="card" hidden>
+        <p><strong>Supabase が未設定です。</strong></p>
+        <p>このアプリはユーザー登録(ログイン)が必須です。<code>config.js</code> に Supabase の URL と publishable key を入れてください(手順は README)。</p>
+      </div>
+
+      <div id="accountOut" class="card" hidden>
+        <h2>ログイン / 新規登録</h2>
+        <p class="hint">このアプリを使うには、ユーザー登録(ログイン)が必要です。</p>
+        <form id="authForm" class="fields">
+          <label>メールアドレス
+            <input id="email" type="email" autocomplete="email" inputmode="email" required>
+          </label>
+          <label>パスワード(6文字以上)
+            <input id="password" type="password" autocomplete="current-password" minlength="6" required>
+          </label>
+          <button type="submit" class="primary">ログイン</button>
+          <hr>
+          <label class="check">
+            <input type="checkbox" id="agree">
+            <span><a href="terms.html" target="_blank" rel="noopener">利用規約</a>に同意して新規登録する</span>
+          </label>
+          <button type="button" id="signupBtn" class="ghost" disabled>新規登録</button>
+        </form>
+        <p class="hint">ログインすると、回答時間の記録がアカウントに保存され、スマホとPCで同じ記録を見られます。</p>
+      </div>
+
+      <div id="accountConsent" class="card" hidden>
+        <h2>利用規約への同意</h2>
+        <p>ご利用を続けるには、<a href="terms.html" target="_blank" rel="noopener">利用規約</a>への同意が必要です。</p>
+        <div class="fields">
+          <label class="check">
+            <input type="checkbox" id="consentAgree">
+            <span>利用規約に同意します</span>
+          </label>
+          <button id="consentBtn" class="primary" disabled>同意して利用を始める</button>
+          <button id="consentLogout" class="ghost">同意せずログアウト</button>
+        </div>
+      </div>
+
+      <div id="accountIn" hidden>
+        <div class="card">
+          <h2>アカウント情報</h2>
+          <dl class="info">
+            <dt>メールアドレス</dt><dd id="accountEmail"></dd>
+            <dt>登録日</dt><dd id="accountCreated"></dd>
+            <dt>利用規約</dt><dd id="accountTerms"></dd>
+          </dl>
+          <div class="fields">
+            <button id="migrateBtn" class="ghost" hidden></button>
+            <button id="logoutBtn" class="ghost">ログアウト</button>
+          </div>
+          <p class="hint" style="margin-top:12px"><a href="terms.html" target="_blank" rel="noopener">利用規約を読む</a></p>
+        </div>
+
+        <div class="card">
+          <h2>パスワード変更</h2>
+          <form id="pwForm" class="fields">
+            <label>現在のパスワード
+              <input id="pwCur" type="password" autocomplete="current-password" required>
+            </label>
+            <label>新しいパスワード(6文字以上)
+              <input id="pwNew" type="password" autocomplete="new-password" minlength="6" required>
+            </label>
+            <label>新しいパスワード(確認)
+              <input id="pwNew2" type="password" autocomplete="new-password" minlength="6" required>
+            </label>
+            <button type="submit" id="pwBtn" class="primary">パスワードを変更</button>
+          </form>
+          <p id="pwMsg" class="notice" role="status" aria-live="polite"></p>
+        </div>
+
+        <div class="card">
+          <h2>招待コード</h2>
+          <p class="hint">招待コードを入力すると、限定の質問セットが「自分の質問」に一括で追加されます。同じコードは、1つのアカウントで1回だけ使えます。</p>
+          <form id="inviteForm" class="fields">
+            <label>招待コード
+              <input id="inviteCode" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="64" required>
+            </label>
+            <button type="submit" id="inviteBtn" class="primary">コードを使う</button>
+          </form>
+          <p id="inviteMsg" class="notice" role="status" aria-live="polite"></p>
+          <h2>使用済みのコード</h2>
+          <ul id="redeemedList" class="stats"></ul>
+        </div>
+      </div>
+
+      <p id="authMsg" class="notice" role="status" aria-live="polite"></p>
+    </section>
+
+    <!-- 責任者 -->
+    <section id="view-admin" class="view">
+      <div class="card">
+        <h2>アカウント利用状況</h2>
+        <p class="hint">責任者だけが見られる画面です。パスワードは、誰にも(責任者にも)見えません。</p>
+        <div id="adminSummary" class="summary"></div>
+        <div class="fields">
+          <input id="adminSearch" type="search" placeholder="メールアドレスで絞り込み" autocomplete="off">
+          <button id="adminReload" class="ghost">最新の状態に更新</button>
+        </div>
+      </div>
+      <p id="adminMsg" class="notice" role="status" aria-live="polite"></p>
+      <ul id="adminList" class="adminlist"></ul>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.js"></script>
+  <script src="config.js"></script>
+  <script src="data/questions.js"></script>
+  <script src="app.js"></script>
+  <script>
+    // PWA: https(または localhost)で開いた時だけ Service Worker を登録する
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
+</body>
+</html>

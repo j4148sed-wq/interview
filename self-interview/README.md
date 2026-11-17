@@ -1,0 +1,101 @@
+# セルフ面接練習
+
+事前に録音した質問(MP3)をランダム/順番/選択で再生し、回答にかかった時間を記録する Web アプリです。
+
+## 動かし方
+1. VS Code でこのフォルダを開く
+2. 拡張機能「Live Server」を入れて `index.html` を右クリック → **Open with Live Server**
+3. スマホで試す場合は、同じ Wi-Fi 上で `http://<PCのIPアドレス>:5500` を開く
+   (※ マイク録音やPWAは、公開後の https で動作します)
+
+## 質問の追加(標準質問)
+- MP3 を `audio/` に置く
+- `data/questions.js` に1行追加する
+  - `parent_id: null` → トップ階層
+  - `parent_id: "q01"` → q01 の深掘り質問(q01 が流れるまで出題されない)
+
+MP3 が無い間は、ブラウザの音声合成が質問文を読み上げます(動作確認用)。
+
+## ステップ
+- [x] 2. ローカルで動く版(3モード・階層ロジック・時間計測・記録)
+- [x] 3. Supabase 連携(メールログイン・記録の保存)
+- [x] 4a. ユーザー質問の追加(MP3などのアップロード・親質問の指定・削除)
+- [x] 4b. ブラウザ上のマイク録音で質問を追加
+- [x] 5. PWA 化 + GitHub Pages 公開(手順は下の「公開」)
+
+## Supabase のセットアップ(ステップ3)
+1. https://supabase.com でプロジェクトを作成する
+2. **SQL Editor** で `supabase/schema.sql` の内容を貼り付けて Run する
+3. **Project Settings → API** の「Project URL」と「anon public key」を `config.js` に貼る
+4. **Authentication → URL Configuration**
+   - Site URL: 公開後の URL(例 `https://<ユーザー名>.github.io/<リポジトリ名>/`)
+   - Redirect URLs: 上記に加えて `http://127.0.0.1:5500/` と `http://localhost:5500/` を追加
+   (確認メールのリンクの飛び先になります)
+5. 開発中に確認メールを省きたい場合: **Authentication → Providers → Email** の「Confirm email」をオフにする(公開時はオン推奨)
+
+`config.js` の anon key は公開しても安全な鍵です(記録は Row Level Security で本人だけが読み書きできます)。
+**service_role key は絶対にコミットしないでください。**
+
+未設定のままでも、これまで通り「この端末のみ」に保存して動作します。
+
+## ログイン必須・利用規約への同意
+- ログイン(ユーザー登録)しないと、アプリ本体は使えません。未ログインの間はアカウント画面だけが表示されます。
+- 新規登録には、`terms.html`(利用規約)への同意チェックが必要です。同意した規約のバージョンと日時は、ユーザー情報(user_metadata)に保存されます。
+- 規約を追加する前に登録したユーザーにも、次回ログイン時に同意画面が表示されます。
+- 規約を改定したら、`terms.html` の改定日・バージョンと、`app.js` 先頭の `TERMS_VERSION` を同じ値に更新してください(全ユーザーに再同意を求められます)。
+- `terms.html` の黄色い【 】部分(運営者名・連絡先)は、公開前に必ず書き換えてください。
+
+## ユーザー質問の追加(ステップ4)
+1. Supabase の SQL Editor で `supabase/step4_user_questions.sql` を実行する(1回だけ)
+2. アプリの「質問一覧」タブ → 「質問を追加する」から、質問文・親の質問・音声ファイルを選んで追加
+   - 親の質問を選ぶと、その質問が流れたあとに出題される「深掘り質問」になります
+   - 標準の質問と自分の質問は、一覧で分けて表示されます(自分の質問だけ削除できます)
+   - 音声は非公開のStorageに保存され、本人だけが再生できます
+
+## マイク録音
+- 「質問を追加する」フォームの「● 録音する」から、その場で録音して質問にできます(最大3分)。
+- マイクは **https のページ、または PC の localhost** でのみ使えます(同じWi-Fiのスマホから `http://192.168...` で開く方法では使えません)。スマホでの確認は、GitHub Pages で公開した後に行ってください。
+- 録音形式は端末ごとに異なります(iPhone/Safari: m4a、Chrome系: m4a または webm)。古い iPhone では webm の再生に対応していない場合があり、その時は質問文の読み上げに切り替わります。
+
+## 公開(GitHub Pages)
+1. GitHub で新しいリポジトリを作る(Public、README などは追加しない)
+2. VS Code の「ソース管理」→「リポジトリを初期化」→ コミット →「Branch の発行(Publish Branch)」
+   (ターミナルなら: `git init` → `git add .` → `git commit -m "first commit"` → `git branch -M main` → `git remote add origin <URL>` → `git push -u origin main`)
+3. GitHub のリポジトリ → **Settings → Pages** → Source: **Deploy from a branch** / Branch: **main**、フォルダ **/(root)** → Save
+4. 1〜2分後に `https://<ユーザー名>.github.io/<リポジトリ名>/` で公開される
+
+### 公開前のチェックリスト
+- [ ] `terms.html` の【運営者名】【連絡先】を書き換えた(`class="todo"` も削除)
+- [ ] `config.js` に自分の Project URL と publishable key が入っている(service_role / secret key は入っていない)
+- [ ] Supabase → Authentication → URL Configuration
+  - Site URL: 公開URL(`https://<ユーザー名>.github.io/<リポジトリ名>/`)
+  - Redirect URLs: 上記に `**` を付けたもの(例 `https://<ユーザー名>.github.io/<リポジトリ名>/**`)と、`http://127.0.0.1:5500/**`
+- [ ] Supabase → Authentication → Providers → Email の「Confirm email」をオン
+- [ ] 他の人にも使ってもらう場合は、Supabase の Custom SMTP(Resend / Brevo など)を設定(標準のメール送信は、送信数や宛先に制限があります)
+- [ ] スマホで、登録 → 確認メール → ログイン → 録音 → 質問追加 を一通り試した
+
+### スマホのホーム画面に追加
+- iPhone(Safari): 共有ボタン →「ホーム画面に追加」
+- Android(Chrome): メニュー →「アプリをインストール」または「ホーム画面に追加」
+
+### 更新するとき
+ファイルを修正してコミット&プッシュすれば、1〜2分で反映されます。スマホで古い表示が残るときは、`sw.js` の `CACHE` の番号(`self-interview-v1` → `v2`)を上げてください。
+
+## ステップ6: 設定・招待コード・責任者
+- 「アカウント」タブは **「設定」** になりました(アカウント情報 / パスワード変更 / 招待コード)。
+- **招待コード**: 入力すると、限定の質問セット(音声・質問文・深掘りの階層)が「自分の質問」に一括で追加されます(「限定」バッジ付き)。同じコードは、1つのアカウントで1回だけ使えます(削除しても再使用はできません)。
+- **責任者**: 責任者のアカウントには「責任者」タブが出て、全アカウントの利用状況(登録日・最終ログイン・回答回数と平均時間・自分の質問の件数・使った招待コード)を見られます。パスワードは、誰にも見えません。
+
+### セットアップ(運営者が1回だけ)
+1. Supabase の SQL Editor で `supabase/step6_invite_admin.sql` を実行(**Run を押して「Success」を確認**)
+2. 自分のアカウントを責任者にする: `supabase/step6_examples.sql` の「A」のSQLに自分のメールアドレスを入れて実行
+3. アプリをリロードし、ログインし直す → 「責任者」タブが出れば成功
+
+### 招待コードの発行(運営者)
+1. Supabase の **Storage → `pack-audio`** バケットに、限定の音声ファイルをアップロード(例: `setA/01.mp3`)
+2. `supabase/step6_examples.sql` の「B」を書き換えて実行(質問セットと、招待コードが作られます)
+3. コードを配る。止めたいときは「C」のSQLで `active = false` にします
+- 責任者の追加・削除も、同ファイル「A」のSQLで行います。
+
+### 規約を改定したため
+利用規約に「責任者による利用状況の閲覧」と「招待コード」を追記し、`TERMS_VERSION` を更新しました。そのため、**既存アカウントは次回ログイン時に、もう一度同意が求められます**。
