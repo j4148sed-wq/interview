@@ -159,19 +159,29 @@
 
   // MP3 が無い/再生できない時の代替(質問文の読み上げ)
   let speechUnlocked = false;
+  // 端末内蔵の日本語の声を優先する(Chrome の「Google 日本語」などネット経由の声は、読み上げが止まることがある)
   const jaVoice = () => {
     try {
-      const v = speechSynthesis.getVoices();
-      return v.find((x) => x.lang === "ja-JP") || v.find((x) => /^ja/i.test(x.lang)) || null;
+      const v = speechSynthesis.getVoices().filter((x) => /^ja/i.test(x.lang));
+      return v.find((x) => x.lang === "ja-JP" && x.localService) || v.find((x) => x.localService)
+        || v.find((x) => x.lang === "ja-JP") || v[0] || null;
     } catch { return null; }
   };
+  const voiceInfo = () => {
+    try {
+      const v = speechSynthesis.getVoices();
+      return `声${v.length}件・日本語${v.filter((x) => /^ja/i.test(x.lang)).length}件`;
+    } catch { return "声の情報なし"; }
+  };
+  let keepUtt = null;   // 読み上げ中のデータを保持する。Chrome は、参照が無くなると、読み上げが途中で止まることがある
 
   // iPhone の Safari は、ボタンを押した瞬間に一度だけ読み上げを許可しないと、後からの読み上げが無音になる
   function unlockSpeech() {
     if (speechUnlocked || !("speechSynthesis" in window)) return;
     speechUnlocked = true;
     try {
-      speechSynthesis.getVoices();                    // 声の一覧の読み込みを始めておく
+      speechSynthesis.getVoices();                    // 声の一覧の読み込みを始めておく(Chrome は、非同期で読み込む)
+      speechSynthesis.onvoiceschanged = () => {};
       const u = new SpeechSynthesisUtterance(" ");
       u.volume = 0;
       u.lang = "ja-JP";
@@ -189,13 +199,18 @@
     try {
       const u = new SpeechSynthesisUtterance(text);
       u.lang = "ja-JP";
+      u.volume = 1; u.rate = 1; u.pitch = 1;
       const v = jaVoice();
       if (v) u.voice = v;
+      keepUtt = u;
       u.onstart = () => { started = true; };
       u.onend = once;
       u.onerror = once;
       speechSynthesis.cancel();                       // 残っている読み上げを消す。直後の speak は iPhone で無視されることがあるので、少し待つ
-      setTimeout(() => { try { speechSynthesis.speak(u); } catch (e) { once(); } }, 80);
+      setTimeout(() => {
+        try { speechSynthesis.resume(); } catch (e) { /* 非対応の環境では、何もしない */ }   // Chrome で、停止状態から始まることがあるため
+        try { speechSynthesis.speak(u); } catch (e) { once(); }
+      }, 80);
       sw = setTimeout(() => { if (!started && onSilent) onSilent(); }, 2500);
     } catch (e) { console.warn(e); setTimeout(once, 1500); }
   }
@@ -226,7 +241,7 @@
       $("#status").textContent = `音声を再生できませんでした(${why})。質問文を読み上げます…`;
       speak(q.title, finish, () => {
         if (token === state.token && state.phase === "playing") {
-          $("#status").textContent = "読み上げが始まりません。端末の音量・消音スイッチ・日本語の音声を確認してください";
+          $("#status").textContent = `読み上げが始まりません(${voiceInfo()})。端末の音量・消音スイッチ・日本語の音声を確認してください`;
         }
       });
     };
