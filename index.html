@@ -221,18 +221,7 @@
     </section>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.js"></script>
-  <script src="config.js"></script>
-  <script src="data/questions.js"></script>
-  <script src="app.js"></script>
-  <script>
-    // PWA: https(または localhost)で開いた時だけ Service Worker を登録する
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
-    }
-  </script>
-
-  <!-- 回答の聞き返し(閉じるには、必ず「削除して閉じる」を押す) -->
+    <!-- 回答の聞き返し(閉じるには、必ず「削除して閉じる」を押す) -->
   <div id="review" class="review" role="dialog" aria-modal="true" aria-labelledby="reviewTitle" hidden>
     <div class="review-box">
       <h2 id="reviewTitle">回答を聞き返す</h2>
@@ -250,5 +239,16 @@
       </div>
     </div>
   </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.js"></script>
+  <script src="config.js"></script>
+  <script src="data/questions.js"></script>
+  <script src="app.js"></script>
+  <script>
+    // PWA: https(または localhost)で開いた時だけ Service Worker を登録する
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
 </body>
 </html>
