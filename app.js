@@ -41,6 +41,8 @@
     user: null,
     authReady: false,                  // ログイン状態の確認が終わったか
     userQuestions: [],                 // 自分で追加した質問
+    justFinished: false,               // 全質問が終わって、記録ページに移動した直後か
+    saving: false,                     // 記録の保存中
     forceTitle: false,                 // 音声が再生できなかった時は、設定に関係なく質問文を表示する
     isAdmin: false,                    // 責任者か
     redemptions: [],                   // 使用済みの招待コード
@@ -89,9 +91,9 @@
       const list = state.stack[state.stack.length - 1];
       q = list.splice(Math.floor(Math.random() * list.length), 1)[0];
     } else {
-      // 2) 深掘りが終わったらトップ階層からランダム(全部出したらリセット)
-      let pool = childrenOf(null).filter((t) => !state.askedTop.has(t.id));
-      if (!pool.length) { state.askedTop.clear(); pool = childrenOf(null); }
+      // 2) 深掘りが終わったらトップ階層からランダム(全部出し終えたら null を返して終了)
+      const pool = childrenOf(null).filter((t) => !state.askedTop.has(t.id));
+      if (!pool.length) return null;
       q = pool[Math.floor(Math.random() * pool.length)];
       state.askedTop.add(q.id);
     }
@@ -105,6 +107,16 @@
     if (state.settings.mode === "random") return pickRandom();
     if (state.settings.mode === "sequential") return state.order[state.seqIndex++] ?? null;
     return null; // pick モードは一覧から選ぶ
+  }
+
+  // この後に出す質問が、まだ残っているか
+  function hasMore() {
+    if (state.settings.mode === "sequential") return state.seqIndex < state.order.length;
+    if (state.settings.mode === "random") {
+      if (state.stack.some((l) => l.length)) return true;
+      return childrenOf(null).some((t) => !state.askedTop.has(t.id));
+    }
+    return false;
   }
 
   function resetSession() {
@@ -303,6 +315,7 @@
     // 未ログイン・未同意の間は、アカウント画面しか開けない
     if (document.body.classList.contains("locked") && name !== "account") name = "account";
     if (name === "admin" && !state.isAdmin) name = "account";
+    if (name !== "history") state.justFinished = false;
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
     document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
     if (name === "history") renderHistory();
@@ -320,16 +333,32 @@
     }
     const q = nextQuestion();
     if (!q) {
-      stopAudio(); resetTimer();
-      state.current = null;
-      setPhase("done");
+      // 開始時に質問が無い場合は、その場で終了表示。出題の途中で尽きた場合は、記録ページへ移る
+      if (state.phase === "idle" || state.phase === "done") {
+        stopAudio(); resetTimer();
+        state.current = null;
+        setPhase("done");
+      } else {
+        finishSession();
+      }
       return;
     }
     play(q);
   }
 
-  function onNext() {
+  // 全ての質問が終わった: 練習画面を「終了」にして、記録ページへ移動する
+  function finishSession() {
+    stopAudio(); resetTimer();
+    state.current = null;
+    state.justFinished = true;
+    setPhase("done");
+    switchTab("history");
+  }
+
+  async function onNext() {
+    if (state.saving) return;
     if (state.phase === "idle" || state.phase === "done") {
+      state.justFinished = false;
       resetSession();
       advance();
       return;
@@ -338,12 +367,15 @@
       advance();
       return;
     }
-    if (state.phase === "answering") {    // 回答終了 → 時間を止めて記録(自動では進まない)
+    if (state.phase === "answering") {    // 回答終了 → 時間を止めて記録(自動では次へ進まない)
       const sec = stopTimer();
       if (sec !== null && state.current) {
-        saveAnswer(state.current, sec);
         $("#timer").textContent = fmt(sec);
+        state.saving = true;
+        try { await saveAnswer(state.current, sec); } finally { state.saving = false; }
       }
+      // これが最後の質問だった場合は、保存したあと、自動で記録ページへ移る
+      if (state.settings.mode !== "pick" && !hasMore()) { finishSession(); return; }
       setPhase("answered");
       return;
     }
@@ -502,6 +534,7 @@
 
   /* ========== 記録 ========== */
   function renderHistory() {
+    $("#doneNote").hidden = !state.justFinished;
     $("#historySource").textContent = state.user
       ? "保存先: アカウント(どの端末からでも見られます)"
       : "保存先: この端末のみ(ログインすると、アカウントに保存できます)";

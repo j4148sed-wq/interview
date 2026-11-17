@@ -209,3 +209,6 @@ select { width: 100%; text-overflow: ellipsis; }
 
 /* hidden 属性を、display の指定より優先させる(録音ボタンなどが、状態に関係なく全部出てしまう不具合の修正) */
 [hidden] { display: none !important; }
+
+/* 全質問が終わって記録ページに移動した時の案内 */
+.done-note { background: var(--surface); border: 1px solid var(--accent); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 12px; font-weight: 700; }
