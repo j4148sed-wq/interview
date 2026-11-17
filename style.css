@@ -186,3 +186,23 @@ input[type="search"] {
 .adminlist li { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 8px; }
 .aemail { margin: 0 0 8px; font-weight: 700; word-break: break-all; }
 .adminlist .adl { margin: 0; }
+
+/* スマホで、長い文字や選択欄に引っ張られてページが横に広がらないようにする */
+html { -webkit-text-size-adjust: 100%; }
+main { width: 100%; overflow-wrap: anywhere; }
+.fields, .rec, .settings { grid-template-columns: minmax(0, 1fr); }   /* 列が中身の長さまで広がるのを防ぐ */
+.fields label, .rec label, .settings label { min-width: 0; }
+select, input[type="text"], input[type="email"], input[type="password"], input[type="search"], input[type="file"] {
+  max-width: 100%; min-width: 0;
+}
+select { width: 100%; text-overflow: ellipsis; }
+.t { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }            /* 長い質問文は折り返す */
+.qlist li { max-width: 100%; }
+.qlist li .play, .qlist li .del, .qlist li .badge { flex: none; }
+#recPreview, audio { max-width: 100%; }
+.card { max-width: 100%; overflow: hidden; }
+@media (max-width: 480px) {
+  main { padding: 12px; }
+  .qlist li { gap: 8px; padding: 10px; margin-left: calc(var(--d, 0) * 12px); }   /* 深掘りの字下げを、スマホでは小さめに */
+  button.del { padding: 8px; }
+}
