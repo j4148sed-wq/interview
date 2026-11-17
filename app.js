@@ -262,9 +262,17 @@
     if (state.settings.timerBase === "start") startTimer();
 
     unlockAll();
-    if (state.settings.recordAnswers) ensureMic();
+    // 録音する設定なら、マイクの許可が決まってから質問を流す(許可の確認中に質問が始まらないように)
+    let micWait = Promise.resolve(true);
+    if (state.settings.recordAnswers) {
+      micWait = ensureMic();
+      if (!(ans.stream && ans.stream.active) && !ans.denied) $("#status").textContent = "マイクの許可を待っています…";
+    }
 
-    resolveAudioUrl(q).then((url) => {
+    micWait.then(() => {
+      if (token !== state.token) return null;
+      return resolveAudioUrl(q);
+    }).then((url) => {
       if (token !== state.token) return;
       if (!url) { fallback("音声のURLを取得できません"); return; }
       audio.onended = finish;
