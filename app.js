@@ -536,7 +536,27 @@
   }
 
   /* ========== 原稿との照合(AIの文字起こしは、すべてこの端末の中で行う) ========== */
-  const STT_LIB = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1";
+  const STT_LIBS = [
+    "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1",
+    "https://esm.sh/@huggingface/transformers@3.5.1"
+  ];
+  // AIの部品(ライブラリ)の取得。1か所に25秒応答がなければ、次の取得先を試す
+  async function importStt(say) {
+    const errs = [];
+    for (const u of STT_LIBS) {
+      const host = new URL(u).host;
+      say(`AIの部品を読み込んでいます…(${host})`);
+      try {
+        const m = await Promise.race([
+          import(u),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("25秒たっても応答がありません")), 25000))
+        ]);
+        console.log("AIの部品を取得:", host);
+        return m;
+      } catch (e) { console.warn("AIの部品の取得に失敗:", host, e); errs.push(`${host}: ${e.message || e}`); }
+    }
+    throw new Error("AIの部品を取得できませんでした(" + errs.join(" / ") + ")");
+  }
   const KURO_JS = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js";
   const KURO_DIC = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/";
   const stt = { pipe: null, model: "", busy: false, kuro: null, gen: 0 };
@@ -551,8 +571,7 @@
     if (!ready && !confirm(`初回は、AIのモデル(${size})をダウンロードします。Wi-Fi での利用をおすすめします。音声はこの端末の外に送られません。続けますか?`)) {
       const e = new Error("cancel"); e.cancel = true; throw e;
     }
-    say("AIの部品を読み込んでいます…");
-    const { pipeline, env } = await import(STT_LIB);
+    const { pipeline, env } = await importStt(say);
     env.allowLocalModels = false;
     const files = new Map();
     stt.pipe = await pipeline("automatic-speech-recognition", model, {
