@@ -6,7 +6,7 @@
   const LS_SETTINGS = "si_settings_v1";
   // 利用規約を改定したら、この日付を変える(terms.html の制定日と合わせる)。
   // 変えると、既存ユーザーにも次回ログイン時に再同意が求められます。
-  const TERMS_VERSION = "2026-11-17.2";
+  const TERMS_VERSION = "2026-11-18.1";
   const BUCKET = "question-audio";          // Supabase Storage のバケット名
   const MAX_FILE = 10 * 1024 * 1024;        // 音声ファイルの上限 10MB
   const MAX_QUESTIONS = 100;                // 1人あたりの自作質問の上限(DB側にも同じ制限あり)
