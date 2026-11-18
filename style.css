@@ -266,3 +266,5 @@ button.scr { flex: none; background: none; border: 1px solid var(--line); color:
 .chk .out-label { margin: 4px 0 0; font-size: .8rem; color: var(--muted); }
 .miss { background: color-mix(in srgb, #c62828 25%, transparent); color: #c62828; border-radius: 3px; }
 @media (prefers-color-scheme: dark) { .miss { color: #ff8a80; } }
+
+.warn { background: color-mix(in srgb, #f9a825 40%, transparent); color: inherit; border-radius: 3px; }

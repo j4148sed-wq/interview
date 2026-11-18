@@ -429,7 +429,6 @@
   function closeReviewAndDelete() {
     stt.gen++;                 // 実行中の照合の結果は、捨てる
     if (stt.busy) stopStt();   // 処理も止める
-    stopKuro();                // 読みの辞書のメモリも解放する
     pauseReviewAudio();
     $("#reviewList").querySelectorAll("audio").forEach((a) => { a.removeAttribute("src"); a.load(); });
     $("#reviewList").textContent = "";
@@ -585,24 +584,6 @@
     try { localStorage.setItem(key, "1"); } catch (_) {}
   }
 
-  // 読み(かな)を調べる辞書は、画面とは別のスレッド(kuro-worker.js)で動かす。
-  // 読み込みに失敗した時(または20秒かかった時)は、文字どおりの比較に切り替える
-  const kuro = { worker: null, handlers: new Map(), seq: 0 };
-  function kuroCall(msg) {
-    return new Promise((resolve, reject) => {
-      if (!kuro.worker) {
-        const w = new Worker("kuro-worker.js");
-        w.onmessage = (e) => { const h = kuro.handlers.get(e.data.id); if (h) h(e.data); };
-        w.onerror = (e) => { console.warn("kuro-worker のエラー", e); [...kuro.handlers.values()].forEach((h) => h({ type: "error", message: (e && e.message) || "辞書を開始できません" })); };
-        kuro.worker = w;
-      }
-      const id = ++kuro.seq;
-      kuro.handlers.set(id, (m) => { kuro.handlers.delete(id); if (m.type === "error") reject(new Error(m.message)); else resolve(m); });
-      kuro.worker.postMessage({ ...msg, id });
-    });
-  }
-  function stopKuro() { if (kuro.worker) kuro.worker.terminate(); kuro.worker = null; kuro.handlers.clear(); }
-
   async function decode16k(b) {
     const buf = await b.arrayBuffer();
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -630,7 +611,7 @@
   }
 
   const OUTRO = /(ご視聴|チャンネル登録|次回の動画|また次回|お会いしましょう|ありがとうございました|おやすみなさい|字幕)/;
-  const nk = (s) => String(s || "").normalize("NFKC").replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60))
+  const nk = (s) => String(s || "").normalize("NFKC").toLowerCase().replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60))
     .replace(/[\s、。,.!?「」『』()・…\-〜~]/g, "");
   function cleanOutro(chunks, script) {
     const keep = chunks.slice(), sn = nk(script);
@@ -641,31 +622,59 @@
     return keep.map((c) => c.text).join("").trim();
   }
 
-  // 文章を「表記 + 読み」の並びにする(辞書が無い時は、1文字ずつ)
-  function toKanaTokens(raw, text) {
-    if (!raw) return [...String(text)].map((ch) => ({ surface: ch, kana: nk(ch) }));
-    return raw.map((t) => {
-      const r = t.pron && t.pron !== "*" ? t.pron : (t.reading && t.reading !== "*" ? t.reading : t.surface);
-      return { surface: t.surface, kana: nk(r) };
-    });
-  }
-
-  // 原稿の読みが、話した内容の読みに「順番どおりに」含まれているかを数える(LCS)
-  function compareReadings(script, spoken, raws) {
-    const st = toKanaTokens(raws && raws[0], script), sp = toKanaTokens(raws && raws[1], spoken);
-    const a = [], owner = [];
-    st.forEach((t, ti) => [...t.kana].forEach((ch) => { a.push(ch); owner.push(ti); }));
-    const b = sp.flatMap((t) => [...t.kana]);
+  // 原稿と、聞き取った文章の比較。
+  //   ・漢字だけの違い(例: 専攻/先行)は、黄色で表示し、減点しない
+  //   ・ひらがな・カタカナ・英数字の違いや、言い落としは、赤で表示し、減点する
+  // 漢字として扱うのは、「漢字だけが連続して合わなかった部分」。かなを含む部分(文の言い落としなど)は、すべて赤にする
+  const isKanji = (c) => /[\u3400-\u9FFF\uF900-\uFAFF々〆]/.test(c);
+  function compareChars(script, spoken) {
+    const chars = [...String(script)], sp = [...String(spoken || "")];
+    const keepOf = (arr) => arr.map((c) => { const n = nk(c); return n.length ? n : null; });   // 句読点・空白は、比べない
+    const keep = keepOf(chars), keepS = keepOf(sp);
+    const a = [...keep.filter(Boolean).join("")], b = [...keepS.filter(Boolean).join("")];
     const n = a.length, m = b.length;
     const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
     for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
       dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    const hit = new Array(n).fill(false);
+    const hitA = new Array(n).fill(false), hitB = new Array(m).fill(false);
     let i = 0, j = 0;
-    while (i < n && j < m) { if (a[i] === b[j]) { hit[i] = true; i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++; }
-    const bad = new Set(); hit.forEach((h, k) => { if (!h) bad.add(owner[k]); });
-    const html = st.map((t, ti) => (bad.has(ti) ? `<span class="miss">${esc(t.surface)}</span>` : esc(t.surface))).join("");
-    return { pct: n ? Math.round((dp[0][0] / n) * 100) : 0, matched: dp[0][0], total: n, html };
+    while (i < n && j < m) { if (a[i] === b[j]) { hitA[i] = true; hitB[j] = true; i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++; }
+
+    // 元の文字ごとに「合った / 合わなかった」を決める(NFKCで複数文字になる場合は、すべて合った時だけ合った)
+    const statusOf = (arr, kp, hit) => {
+      const st = []; let k = 0;
+      arr.forEach((c, idx) => {
+        if (kp[idx] === null) { st.push("skip"); return; }
+        const w = [...kp[idx]].length; let ok = true;
+        for (let t = 0; t < w; t++) if (!hit[k + t]) ok = false;
+        k += w; st.push(ok ? "ok" : "miss");
+      });
+      return st;
+    };
+    // 合わなかった文字が連続している部分(区切りは、合った文字・句読点)を、まとめて判定する
+    const judge = (arr, st) => {
+      const mark = st.slice();
+      for (let s = 0; s < arr.length; ) {
+        if (st[s] !== "miss") { s++; continue; }
+        let e = s; while (e < arr.length && st[e] === "miss") e++;
+        const onlyKanji = e - s <= 6 && arr.slice(s, e).every(isKanji);
+        for (let t = s; t < e; t++) mark[t] = onlyKanji ? "kanji" : "red";
+        s = e;
+      }
+      return mark;
+    };
+    const paint = (arr, mark) => arr.map((c, idx) => (mark[idx] === "red" ? `<span class="miss">${esc(c)}</span>` : mark[idx] === "kanji" ? `<span class="warn">${esc(c)}</span>` : esc(c))).join("");
+    const mark = judge(chars, statusOf(chars, keep, hitA));
+    const markS = judge(sp, statusOf(sp, keepS, hitB));
+    const cnt = (mk, v) => mk.filter((x) => x === v).length;
+    const total = mark.filter((x) => x !== "skip").length;
+    const red = cnt(mark, "red"), yellow = cnt(mark, "kanji");
+    const extra = cnt(markS, "red"), extraYellow = cnt(markS, "kanji");
+    return {
+      pct: total ? Math.max(0, Math.round(((total - red) / (total + extra)) * 100)) : 0,
+      red, yellow, extra, extraYellow, total,
+      html: paint(chars, mark), heardHtml: paint(sp, markS),
+    };
   }
 
   function buildCheckBox(it) {
@@ -703,10 +712,7 @@
     document.querySelectorAll("#reviewList .chk-btn").forEach((b) => (b.disabled = true));
     res.textContent = "";
     try {
-      const kuroP = kuroCall({ type: "init" }).then(() => true, (e) => { console.warn("読みの辞書:", e); return false; });   // 辞書は、AIの準備と並行して別スレッドで読み込む
       await loadModel(say);
-      say("読みを調べる辞書を読み込んでいます…");
-      const kuroOk = await Promise.race([kuroP, new Promise((r) => setTimeout(() => r(false), 20000))]);   // 20秒で諦めて、文字どおりの比較にする
       say("音声を読み込んでいます…");
       const data = preprocessAudio(await decode16k(it.blob));
       say("文字に起こしています…(端末によっては、数十秒かかります)");
@@ -714,15 +720,13 @@
       const out = await sttCall({ type: "run", audio: data }, [data.buffer]);
       const chunks = out.chunks && out.chunks.length ? out.chunks : [{ text: out.text || "" }];
       const text = cleanOutro(chunks, script);
-      let raws = null;
-      if (kuroOk) { try { raws = (await kuroCall({ type: "tokenize", texts: [script, text] })).out; } catch (e) { console.warn(e); } }
-      const cmp = compareReadings(script, text, raws);
+      const cmp = compareChars(script, text);
       if (!alive()) return;
       it.result = `
         <p class="score">原稿との一致: ${cmp.pct}%</p>
-        <p class="out-label">原稿(読みが合わなかった言葉は赤)</p><div class="out">${cmp.html}</div>
-        <p class="out-label">AIが聞き取った文章</p><div class="out">${esc(text || "(認識できませんでした)")}</div>
-        <p class="rmsg">${raws ? "同じ読みの言葉(例: 専攻/先行)は、一致として数えています。" : "読みの辞書を読み込めなかったため、文字どおりに比べました。"}聞き取りの誤りもあるため、目安として見てください。</p>`;
+        <p class="out-label">原稿(<span class="warn">黄色</span>=漢字の違い・減点なし${cmp.yellow ? `(${cmp.yellow}文字)` : ""} / <span class="miss">赤</span>=ひらがな・カタカナ・英数字の違いや言い落とし・減点${cmp.red ? `(${cmp.red}文字)` : ""})</p><div class="out">${cmp.html}</div>
+        <p class="out-label">AIが聞き取った文章(<span class="miss">赤</span>=付け足し・減点${cmp.extra ? `(${cmp.extra}文字)` : ""} / <span class="warn">黄色</span>=漢字の違い)</p><div class="out">${text ? cmp.heardHtml : "(認識できませんでした)"}</div>
+        <p class="rmsg">ひらがなとカタカナの書き分けと、全角・半角、英字の大文字小文字の違いは、同じ文字として比べています。聞き取りの誤りもあるため、目安として見てください。</p>`;
       res.innerHTML = it.result; msg.textContent = "";
     } catch (e) {
       if (!alive()) return;
