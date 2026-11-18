@@ -688,7 +688,7 @@
       box.append(p); return box;
     }
     const btn = document.createElement("button"); btn.type = "button"; btn.className = "ghost chk-btn";
-    btn.textContent = "原稿と照合する(AIで文字起こし)";
+    btn.textContent = "原稿と照合する(AIで文字起こし・ベータ版)";
     const msg = document.createElement("p"); msg.className = "rmsg";
     const res = document.createElement("div");
     btn.onclick = () => runCheck(it, script, btn, msg, res);
@@ -726,7 +726,8 @@
       const cmp = compareChars(script, text);
       if (!alive()) return;
       it.result = `
-        <p class="score">原稿との一致: ${cmp.pct}%</p>
+        <p class="score">原稿との一致: ${cmp.pct}% <span class="beta">ベータ版</span></p>
+        <p class="rmsg beta-note">⚠ この機能はベータ版です。AIの文字起こしは完全ではなく、正しく話していても聞き間違えられることがあります。結果は目安として、聞き返しの音声と合わせて確認してください。</p>
         <p class="out-label">原稿(<span class="warn">黄色</span>=漢字の書き間違い・減点なし${cmp.yellow ? `(${cmp.yellow}文字)` : ""} / <span class="miss">赤</span>=ひらがな・カタカナ・英数字の違いや言い落とし・減点${cmp.red ? `(${cmp.red}文字)` : ""})</p><div class="out">${cmp.html}</div>
         <p class="out-label">AIが聞き取った文章(<span class="miss">赤</span>=付け足し・減点${cmp.extra ? `(${cmp.extra}文字)` : ""} / <span class="warn">黄色</span>=漢字の書き間違い)</p><div class="out">${text ? cmp.heardHtml : "(認識できませんでした)"}</div>
         <p class="rmsg">ひらがなとカタカナの書き分けと、全角・半角、英字の大文字小文字の違いは、同じ文字として比べています。聞き取りの誤りもあるため、目安として見てください。</p>`;

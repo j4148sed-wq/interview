@@ -268,3 +268,7 @@ button.scr { flex: none; background: none; border: 1px solid var(--line); color:
 @media (prefers-color-scheme: dark) { .miss { color: #ff8a80; } }
 
 .warn { background: color-mix(in srgb, #f9a825 40%, transparent); color: inherit; border-radius: 3px; }
+
+.beta { display: inline-block; font-size: .7rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; color: #b26a00; vertical-align: middle; }
+.beta-note { color: #b26a00; }
+@media (prefers-color-scheme: dark) { .beta, .beta-note { color: #ffb74d; } }
