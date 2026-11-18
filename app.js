@@ -428,6 +428,7 @@
 
   function closeReviewAndDelete() {
     stt.gen++;                 // 実行中の照合の結果は、捨てる
+    if (stt.busy) stopStt();   // 処理も止める
     pauseReviewAudio();
     $("#reviewList").querySelectorAll("audio").forEach((a) => { a.removeAttribute("src"); a.load(); });
     $("#reviewList").textContent = "";
@@ -536,34 +537,42 @@
   }
 
   /* ========== 原稿との照合(AIの文字起こしは、すべてこの端末の中で行う) ========== */
-  const STT_LIBS = [
-    "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1",
-    "https://esm.sh/@huggingface/transformers@3.5.1"
-  ];
-  // AIの部品(ライブラリ)の取得。1か所に25秒応答がなければ、次の取得先を試す
-  async function importStt(say) {
-    const errs = [];
-    for (const u of STT_LIBS) {
-      const host = new URL(u).host;
-      say(`AIの部品を読み込んでいます…(${host})`);
-      try {
-        const m = await Promise.race([
-          import(u),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("25秒たっても応答がありません")), 25000))
-        ]);
-        console.log("AIの部品を取得:", host);
-        return m;
-      } catch (e) { console.warn("AIの部品の取得に失敗:", host, e); errs.push(`${host}: ${e.message || e}`); }
-    }
-    throw new Error("AIの部品を取得できませんでした(" + errs.join(" / ") + ")");
-  }
   const KURO_JS = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js";
   const KURO_DIC = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/";
-  const stt = { pipe: null, model: "", busy: false, kuro: null, gen: 0 };
+  const stt = { worker: null, handlers: new Map(), seq: 0, model: "", busy: false, kuro: null, gen: 0 };
 
-  async function getTranscriber(say) {
+  // AIの処理は、画面とは別のスレッド(stt-worker.js)で行う。処理中も、画面は固まらない
+  function sttWorker() {
+    if (stt.worker) return stt.worker;
+    const w = new Worker("stt-worker.js", { type: "module" });
+    w.onmessage = (e) => { const h = stt.handlers.get(e.data.id); if (h) h(e.data); };
+    w.onerror = (e) => {
+      console.error("stt-worker のエラー", e);
+      const msg = { type: "error", message: (e && e.message) || "AIの処理を開始できませんでした" };
+      [...stt.handlers.values()].forEach((h) => h(msg));
+    };
+    stt.worker = w;
+    return w;
+  }
+  function sttCall(msg, transfer, onProgress) {
+    return new Promise((resolve, reject) => {
+      const id = ++stt.seq;
+      stt.handlers.set(id, (m) => {
+        if (m.type === "progress") { if (onProgress) onProgress(m.text); return; }
+        stt.handlers.delete(id);
+        if (m.type === "error") reject(new Error(m.message)); else resolve(m);
+      });
+      try { sttWorker().postMessage({ ...msg, id }, transfer || []); } catch (e) { stt.handlers.delete(id); reject(e); }
+    });
+  }
+  function stopStt() {          // 実行中の処理を止め、AIの準備もやり直しにする(ダウンロード済みのモデルは、端末に残る)
+    if (stt.worker) stt.worker.terminate();
+    stt.worker = null; stt.model = ""; stt.handlers.clear(); stt.busy = false;
+  }
+
+  async function loadModel(say) {
     const model = state.settings.sttModel || "Xenova/whisper-small";
-    if (stt.pipe && stt.model === model) return stt.pipe;
+    if (stt.worker && stt.model === model) return;
     const key = "si_stt_ready_" + model;
     let ready = false;
     try { ready = localStorage.getItem(key) === "1"; } catch (_) {}
@@ -571,22 +580,10 @@
     if (!ready && !confirm(`初回は、AIのモデル(${size})をダウンロードします。Wi-Fi での利用をおすすめします。音声はこの端末の外に送られません。続けますか?`)) {
       const e = new Error("cancel"); e.cancel = true; throw e;
     }
-    const { pipeline, env } = await importStt(say);
-    env.allowLocalModels = false;
-    const files = new Map();
-    stt.pipe = await pipeline("automatic-speech-recognition", model, {
-      device: "wasm", dtype: "q8",
-      progress_callback: (p) => {
-        if (p.status === "progress" && p.file) {
-          files.set(p.file, p);
-          let l = 0, t = 0; files.forEach((f) => { l += f.loaded || 0; t += f.total || 0; });
-          if (t) say(`AIのモデルをダウンロード中… ${(l / 1048576).toFixed(0)} / ${(t / 1048576).toFixed(0)} MB`);
-        }
-      }
-    });
+    say("AIの処理を始めています…");
+    await sttCall({ type: "load", model }, [], say);
     stt.model = model;
     try { localStorage.setItem(key, "1"); } catch (_) {}
-    return stt.pipe;
   }
 
   // 読み(かな)を調べる辞書。読み込めなかった時は null を返し、文字どおりの比較に切り替える
@@ -702,21 +699,21 @@
       msg.textContent = `${stage}(経過 ${s}秒)` + (s >= 40 ? " — 時間がかかっています。端末が重い場合は、設定でAIの大きさを base に変えると速くなります" : "");
     };
     const say = (t) => { if (t !== stage && !/ダウンロード中/.test(t)) stageAt = Date.now(); stage = t; render(); };
-    const ticker = setInterval(render, 1000);
+    const ticker = setInterval(() => { if (!alive()) clearInterval(ticker); else render(); }, 1000);
     stt.busy = true;
     document.querySelectorAll("#reviewList .chk-btn").forEach((b) => (b.disabled = true));
     res.textContent = "";
     try {
       const kuroP = loadKuromoji();              // 読みの辞書は、AIの準備と並行して読み込む
-      const pipe = await getTranscriber(say);
+      await loadModel(say);
       say("読みを調べる辞書を読み込んでいます…");
       const tk = await Promise.race([kuroP, new Promise((r) => setTimeout(() => r(null), 20000))]);   // 20秒で諦めて、文字どおりの比較にする
       say("音声を読み込んでいます…");
       const data = preprocessAudio(await decode16k(it.blob));
       say("文字に起こしています…(端末によっては、数十秒かかります)");
       await new Promise((r) => setTimeout(r, 30));
-      const out = await pipe(data, { language: "japanese", task: "transcribe", chunk_length_s: 30, stride_length_s: 5, return_timestamps: true });
-      const chunks = Array.isArray(out.chunks) && out.chunks.length ? out.chunks : [{ text: out.text || "" }];
+      const out = await sttCall({ type: "run", audio: data }, [data.buffer]);
+      const chunks = out.chunks && out.chunks.length ? out.chunks : [{ text: out.text || "" }];
       const text = cleanOutro(chunks, script);
       const cmp = compareReadings(script, text, tk);
       if (!alive()) return;
@@ -1787,7 +1784,7 @@
     if ($("#sttModel")) {
       $("#sttModel").value = state.settings.sttModel;
       $("#sttModelWrap").hidden = !state.settings.recordAnswers;
-      $("#sttModel").onchange = (e) => { state.settings.sttModel = e.target.value; saveJSON(LS_SETTINGS, state.settings); stt.pipe = null; };
+      $("#sttModel").onchange = (e) => { state.settings.sttModel = e.target.value; saveJSON(LS_SETTINGS, state.settings); stopStt(); };
     }
     bindScriptUI();
     if ($("#review")) bindReviewUI();
