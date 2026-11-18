@@ -640,32 +640,33 @@
     let i = 0, j = 0;
     while (i < n && j < m) { if (a[i] === b[j]) { hitA[i] = true; hitB[j] = true; i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++; }
 
-    // 元の文字ごとに「合った / 合わなかった」を決める(NFKCで複数文字になる場合は、すべて合った時だけ合った)
-    const statusOf = (arr, kp, hit) => {
-      const st = []; let k = 0;
+    // 合わなかった文字を、「間(直前までに合った文字の数)」ごとにまとめる。
+    // 原稿側と聞き取り側の両方に、漢字だけの合わない部分があるとき(=漢字の書き間違い)だけ、黄色・減点なし。
+    // 片方にしかない部分(抜け・付け足し)や、かなを含む部分は、赤・減点。
+    const gapsOf = (norm, hit) => { let c = 0; return norm.map((_, x) => (hit[x] ? (c++, -1) : c)); };
+    const gA = gapsOf(a, hitA), gB = gapsOf(b, hitB);
+    const gapA = new Map(), gapB = new Map();
+    gA.forEach((g, x) => { if (g >= 0) (gapA.get(g) || gapA.set(g, []).get(g)).push(a[x]); });
+    gB.forEach((g, x) => { if (g >= 0) (gapB.get(g) || gapB.set(g, []).get(g)).push(b[x]); });
+    const gapKind = new Map();
+    new Set([...gapA.keys(), ...gapB.keys()]).forEach((g) => {
+      const x = gapA.get(g) || [], y = gapB.get(g) || [];
+      const subst = x.length && y.length && x.length <= 6 && y.length <= 6 && x.every(isKanji) && y.every(isKanji);
+      gapKind.set(g, subst ? "kanji" : "red");
+    });
+    const markOf = (arr, kp, g) => {
+      const out = []; let k = 0;
       arr.forEach((c, idx) => {
-        if (kp[idx] === null) { st.push("skip"); return; }
-        const w = [...kp[idx]].length; let ok = true;
-        for (let t = 0; t < w; t++) if (!hit[k + t]) ok = false;
-        k += w; st.push(ok ? "ok" : "miss");
+        if (kp[idx] === null) { out.push("skip"); return; }
+        const w = [...kp[idx]].length; let m = "ok";
+        for (let t = 0; t < w; t++) if (g[k + t] >= 0) { const kd = gapKind.get(g[k + t]); if (m !== "red") m = kd; }
+        k += w; out.push(m);
       });
-      return st;
-    };
-    // 合わなかった文字が連続している部分(区切りは、合った文字・句読点)を、まとめて判定する
-    const judge = (arr, st) => {
-      const mark = st.slice();
-      for (let s = 0; s < arr.length; ) {
-        if (st[s] !== "miss") { s++; continue; }
-        let e = s; while (e < arr.length && st[e] === "miss") e++;
-        const onlyKanji = e - s <= 6 && arr.slice(s, e).every(isKanji);
-        for (let t = s; t < e; t++) mark[t] = onlyKanji ? "kanji" : "red";
-        s = e;
-      }
-      return mark;
+      return out;
     };
     const paint = (arr, mark) => arr.map((c, idx) => (mark[idx] === "red" ? `<span class="miss">${esc(c)}</span>` : mark[idx] === "kanji" ? `<span class="warn">${esc(c)}</span>` : esc(c))).join("");
-    const mark = judge(chars, statusOf(chars, keep, hitA));
-    const markS = judge(sp, statusOf(sp, keepS, hitB));
+    const mark = markOf(chars, keep, gA);
+    const markS = markOf(sp, keepS, gB);
     const cnt = (mk, v) => mk.filter((x) => x === v).length;
     const total = mark.filter((x) => x !== "skip").length;
     const red = cnt(mark, "red"), yellow = cnt(mark, "kanji");
@@ -724,8 +725,8 @@
       if (!alive()) return;
       it.result = `
         <p class="score">原稿との一致: ${cmp.pct}%</p>
-        <p class="out-label">原稿(<span class="warn">黄色</span>=漢字の違い・減点なし${cmp.yellow ? `(${cmp.yellow}文字)` : ""} / <span class="miss">赤</span>=ひらがな・カタカナ・英数字の違いや言い落とし・減点${cmp.red ? `(${cmp.red}文字)` : ""})</p><div class="out">${cmp.html}</div>
-        <p class="out-label">AIが聞き取った文章(<span class="miss">赤</span>=付け足し・減点${cmp.extra ? `(${cmp.extra}文字)` : ""} / <span class="warn">黄色</span>=漢字の違い)</p><div class="out">${text ? cmp.heardHtml : "(認識できませんでした)"}</div>
+        <p class="out-label">原稿(<span class="warn">黄色</span>=漢字の書き間違い・減点なし${cmp.yellow ? `(${cmp.yellow}文字)` : ""} / <span class="miss">赤</span>=ひらがな・カタカナ・英数字の違いや言い落とし・減点${cmp.red ? `(${cmp.red}文字)` : ""})</p><div class="out">${cmp.html}</div>
+        <p class="out-label">AIが聞き取った文章(<span class="miss">赤</span>=付け足し・減点${cmp.extra ? `(${cmp.extra}文字)` : ""} / <span class="warn">黄色</span>=漢字の書き間違い)</p><div class="out">${text ? cmp.heardHtml : "(認識できませんでした)"}</div>
         <p class="rmsg">ひらがなとカタカナの書き分けと、全角・半角、英字の大文字小文字の違いは、同じ文字として比べています。聞き取りの誤りもあるため、目安として見てください。</p>`;
       res.innerHTML = it.result; msg.textContent = "";
     } catch (e) {
