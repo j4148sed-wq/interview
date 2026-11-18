@@ -4,7 +4,7 @@ const LIBS = [
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1",
   "https://esm.sh/@huggingface/transformers@3.5.1"
 ];
-let pipe = null, loadedModel = "";
+let pipe = null, loadedModel = "", lowMem = false;
 
 async function importLib(say) {
   const errs = [];
@@ -21,10 +21,12 @@ async function importLib(say) {
   throw new Error("AIの部品を取得できませんでした(" + errs.join(" / ") + ")");
 }
 
-async function load(model, say) {
+async function load(model, say, low) {
+  lowMem = !!low;
   if (pipe && loadedModel === model) return;
   const { pipeline, env } = await importLib(say);
   env.allowLocalModels = false;
+  if (lowMem) { try { env.backends.onnx.wasm.numThreads = 1; } catch (_) {} }   // スマホ: メモリを節約する
   say("AIのモデルを準備しています…");
   const files = new Map();
   pipe = await pipeline("automatic-speech-recognition", model, {
@@ -45,10 +47,11 @@ self.onmessage = async (e) => {
   const say = (text) => self.postMessage({ id, type: "progress", text });
   try {
     if (m.type === "load") {
-      await load(m.model, say);
+      await load(m.model, say, m.lowMem);
       self.postMessage({ id, type: "done" });
     } else if (m.type === "run") {
       const out = await pipe(m.audio, { language: "japanese", task: "transcribe", chunk_length_s: 30, stride_length_s: 5, return_timestamps: true });
+      if (lowMem) { try { await pipe.dispose(); } catch (_) {} pipe = null; loadedModel = ""; }   // スマホ: 終わったらすぐメモリを返す(次回は、端末に保存済みのモデルから読み直す)
       self.postMessage({ id, type: "done", text: out.text || "", chunks: Array.isArray(out.chunks) ? out.chunks.map((c) => ({ text: c.text, timestamp: c.timestamp })) : [] });
     }
   } catch (err) {

@@ -34,8 +34,9 @@
     noticeTimer = setTimeout(() => (el.textContent = ""), 4000);
   }
 
+  const IS_MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   const state = {
-    settings: { mode: "random", timerBase: "end", showTitle: true, recordAnswers: false, source: "default", sttModel: "Xenova/whisper-small", ...loadJSON(LS_SETTINGS, {}) },
+    settings: { mode: "random", timerBase: "end", showTitle: true, recordAnswers: false, source: "default", sttModel: IS_MOBILE ? "Xenova/whisper-base" : "Xenova/whisper-small", ...loadJSON(LS_SETTINGS, {}) },
     local: loadJSON(LS_HISTORY, []),   // この端末に保存した記録
     history: [],                       // 画面に表示する記録(ログイン中=アカウント / 未ログイン=端末)
     user: null,
@@ -579,7 +580,7 @@
       const e = new Error("cancel"); e.cancel = true; throw e;
     }
     say("AIの処理を始めています…");
-    await sttCall({ type: "load", model }, [], say);
+    await sttCall({ type: "load", model, lowMem: IS_MOBILE }, [], say);
     stt.model = model;
     try { localStorage.setItem(key, "1"); } catch (_) {}
   }
@@ -719,6 +720,7 @@
       say("文字に起こしています…(端末によっては、数十秒かかります)");
       await new Promise((r) => setTimeout(r, 30));
       const out = await sttCall({ type: "run", audio: data }, [data.buffer]);
+      if (IS_MOBILE) stt.model = "";   // スマホでは、処理後にAIをメモリから外すため、次回は読み直す
       const chunks = out.chunks && out.chunks.length ? out.chunks : [{ text: out.text || "" }];
       const text = cleanOutro(chunks, script);
       const cmp = compareChars(script, text);
@@ -1790,7 +1792,9 @@
     if ($("#sttModel")) {
       $("#sttModel").value = state.settings.sttModel;
       $("#sttModelWrap").hidden = !state.settings.recordAnswers;
-      $("#sttModel").onchange = (e) => { state.settings.sttModel = e.target.value; saveJSON(LS_SETTINGS, state.settings); stopStt(); };
+      const note = () => { const n = $("#sttModelNote"); if (n) n.hidden = !(IS_MOBILE && /small$/.test($("#sttModel").value)); };
+      note();
+      $("#sttModel").onchange = (e) => { note(); state.settings.sttModel = e.target.value; saveJSON(LS_SETTINGS, state.settings); stopStt(); };
     }
     bindScriptUI();
     if ($("#review")) bindReviewUI();
