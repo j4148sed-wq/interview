@@ -46,6 +46,9 @@
     forceTitle: false,                 // 音声が再生できなかった時は、設定に関係なく質問文を表示する
     isAdmin: false,                    // 責任者か
     redemptions: [],                   // 使用済みの招待コード
+    notices: [],                       // 氏名の一致で届いた、未使用の招待コード
+    adminCodes: [],                    // 責任者画面: 招待コード一覧
+    adminTargets: [],                  // 責任者画面: 招待コードの送り先
     adminRows: [],                     // 責任者画面の一覧
     unlocked: false,                   // 音声要素の「再生許可」済みか(iOS対策)
     phase: "idle",          // idle | playing | answering | done
@@ -917,6 +920,79 @@
     state.adminRows = data || [];
     $("#adminMsg").textContent = "";
     renderAdmin();
+    await loadTargets();
+  }
+
+  /* ----- 招待コードの送り先(責任者) ----- */
+  async function loadTargets() {
+    if (!(sb && state.isAdmin)) return;
+    const [c, t] = await Promise.all([sb.rpc("admin_list_codes"), sb.rpc("admin_list_targets")]);
+    if (c.error || t.error) {
+      console.warn(c.error || t.error);
+      $("#tgtMsg").textContent = "送り先の読み込みに失敗しました。(Supabaseで step7 のSQLを実行済みか確認してください)";
+      return;
+    }
+    state.adminCodes = c.data || [];
+    state.adminTargets = t.data || [];
+    const sel = $("#tgtCode"), keep = sel.value;
+    sel.innerHTML = state.adminCodes.length
+      ? state.adminCodes.map((x) => `<option value="${esc(x.id)}">${esc(x.code)} — ${esc(x.pack_name)}${x.active ? "" : "(停止中)"}</option>`).join("")
+      : `<option value="">招待コードがありません(先にSQLで作成してください)</option>`;
+    if (keep) sel.value = keep;
+    renderTargets();
+  }
+
+  function renderTargets() {
+    $("#tgtList").innerHTML = state.adminTargets.length ? state.adminTargets.map((t) => {
+      const status = !t.matched_at ? "未登録(一致するアカウントなし)"
+        : t.redeemed ? `使用済み(${esc(t.matched_email || "")})`
+        : t.seen_at ? `通知を確認済み(${esc(t.matched_email || "")}・${fmtDate(t.matched_at)})`
+        : `一致して通知中(${esc(t.matched_email || "")}・${fmtDate(t.matched_at)})`;
+      return `<li>
+        <p class="aemail">${esc(t.family_kanji)} ${esc(t.given_kanji)}<small class="sub">${esc(t.family_kana)} ${esc(t.given_kana)}</small></p>
+        <dl class="adl"><dt>招待コード</dt><dd>${esc(t.code)}(${esc(t.pack_name)})</dd>
+        <dt>状態</dt><dd class="tgt-status">${status}</dd></dl>
+        <button type="button" class="ghost del" data-tgt="${esc(t.id)}">この送り先を削除</button></li>`;
+    }).join("") : `<li class="empty">まだ送り先がありません。</li>`;
+  }
+
+  async function addTargets(rows) {
+    const code_id = $("#tgtCode").value;
+    if (!code_id) { $("#tgtMsg").textContent = "送る招待コードを選んでください。"; return false; }
+    const { data, error } = await sb.rpc("admin_add_targets", { p_rows: rows.map((r) => ({ ...r, code_id })) });
+    if (error) { console.warn(error); $("#tgtMsg").textContent = "追加に失敗しました。"; return false; }
+    const skipped = rows.length - data;
+    $("#tgtMsg").textContent = `${data}件を追加しました。${skipped ? `(同じ氏名・同じコードの${skipped}件は、すでにあるため追加しませんでした)` : ""}`;
+    await loadTargets();
+    return true;
+  }
+
+  function bindTargetUI() {
+    $("#tgtForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const nm = parseName($("#tgtFamKanji").value, $("#tgtGivKanji").value, $("#tgtFamKana").value, $("#tgtGivKana").value);
+      if (nm.error) { $("#tgtMsg").textContent = nm.error; return; }
+      if (await addTargets([nm.data])) $("#tgtForm").querySelectorAll(".namegrid input").forEach((i) => (i.value = ""));
+    };
+    $("#tgtCsvBtn").onclick = async () => {
+      const lines = $("#tgtCsv").value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const rows = [], errs = [];
+      lines.forEach((l, i) => {
+        const p = l.split(/[,、\t]/);
+        const nm = p.length === 4 ? parseName(...p) : { error: "「姓,名,セイ,メイ」の4項目にしてください。" };
+        if (nm.error) errs.push(`${i + 1}行目: ${nm.error}`); else rows.push(nm.data);
+      });
+      if (errs.length) { $("#tgtMsg").textContent = errs.slice(0, 3).join(" / ") + (errs.length > 3 ? ` ほか${errs.length - 3}件` : "") + " — 修正してもう一度押してください。"; return; }
+      if (!rows.length) { $("#tgtMsg").textContent = "追加する行がありません。"; return; }
+      if (await addTargets(rows)) $("#tgtCsv").value = "";
+    };
+    $("#tgtList").onclick = async (e) => {
+      const b = e.target.closest("button[data-tgt]");
+      if (!b || !confirm("この送り先を削除します。よろしいですか?(すでに通知済みの人の表示も消えます)")) return;
+      const { error } = await sb.rpc("admin_delete_target", { p_id: b.dataset.tgt });
+      $("#tgtMsg").textContent = error ? "削除に失敗しました。" : "削除しました。";
+      await loadTargets();
+    };
   }
 
   function renderAdmin() {
@@ -931,11 +1007,13 @@
     ].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
 
     const q = $("#adminSearch").value.trim().toLowerCase();
-    const list = rows.filter((r) => !q || (r.account_email || "").toLowerCase().includes(q));
+    const list = rows.filter((r) => !q || (r.account_email || "").toLowerCase().includes(q)
+      || (r.full_name || "").includes(q) || (r.full_name_kana || "").includes(q));
     $("#adminList").innerHTML = list.length ? list.map((r) => `
       <li>
         <p class="aemail">${esc(r.account_email || "(メールなし)")}</p>
         <dl class="adl">
+          <dt>お名前</dt><dd>${r.full_name ? `${esc(r.full_name)}(${esc(r.full_name_kana || "")})` : "未登録"}</dd>
           <dt>登録日</dt><dd>${fmtDate(r.joined_at)}</dd>
           <dt>最終ログイン</dt><dd>${fmtDate(r.last_login_at, true)}</dd>
           <dt>規約への同意</dt><dd>${r.terms_version ? `済(版 ${esc(r.terms_version)})` : "未同意"}</dd>
@@ -945,6 +1023,68 @@
           <dt>招待コード</dt><dd>${r.packs_used ? esc(r.packs_used) : "なし"}</dd>
         </dl>
       </li>`).join("") : `<li class="empty">該当するアカウントがありません。</li>`;
+  }
+
+  /* ========== 氏名(漢字 + カタカナ) ========== */
+  const normText = (s) => String(s || "").normalize("NFKC").replace(/\s+/g, "");
+  const toKatakana = (s) => normText(s).replace(/[\u3041-\u3096]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60));
+  const KANJI_OK = /^[\u3400-\u9FFF\uF900-\uFAFF々〆ヶぁ-んァ-ヶー]{1,20}$/;
+  const KANA_OK = /^[ァ-ヶー]{1,30}$/;
+  // 4つの入力を検査して、保存する形に整える。問題があれば error を返す
+  function parseName(fk, gk, fkana, gkana) {
+    const d = { family_kanji: normText(fk), given_kanji: normText(gk), family_kana: toKatakana(fkana), given_kana: toKatakana(gkana) };
+    if (!d.family_kanji || !d.given_kanji) return { error: "姓と名を、漢字で入力してください。" };
+    if (!KANJI_OK.test(d.family_kanji) || !KANJI_OK.test(d.given_kanji)) return { error: "姓・名は、漢字(20文字以内)で入力してください。" };
+    if (!d.family_kana || !d.given_kana) return { error: "セイとメイを、カタカナで入力してください。" };
+    if (!KANA_OK.test(d.family_kana) || !KANA_OK.test(d.given_kana)) return { error: "セイ・メイは、カタカナで入力してください。" };
+    return { data: d };
+  }
+
+  /* ========== 氏名が一致した人への、招待コードの通知 ========== */
+  async function loadNotices() {
+    state.notices = [];
+    if (state.user && sb) {
+      try {
+        await sb.rpc("claim_name_invites");   // 氏名が送り先と一致していれば、ここでひもづく(ログインのたびに確認)
+        const { data, error } = await sb.rpc("my_invite_notices");
+        if (error) console.warn(error); else state.notices = data || [];
+      } catch (e) { console.warn(e); }
+    }
+    renderNotices();
+  }
+
+  function renderNotices() {
+    const unseen = state.notices.filter((n) => !n.seen_at);
+    const box = $("#inviteNotice");
+    if (!box || !$("#sentBox")) return;     // index.html が古い場合でも止まらないように
+    box.hidden = !unseen.length;
+    box.innerHTML = unseen.map((n) => `
+      <p>招待コードが届きました:「${esc(n.pack_name)}」</p>
+      <div class="row"><code>${esc(n.code)}</code>
+        <button type="button" class="primary" data-act="use" data-code="${esc(n.code)}">設定で使う</button>
+        <button type="button" class="ghost" data-act="later">あとで</button></div>`).join("");
+    $("#sentBox").hidden = !state.notices.length;
+    $("#sentCodes").innerHTML = state.notices.map((n) => `
+      <li><span class="t">「${esc(n.pack_name)}」</span><code>${esc(n.code)}</code>
+        <button type="button" class="ghost" data-act="use" data-code="${esc(n.code)}">入力欄に入れる</button></li>`).join("");
+  }
+
+  async function markNoticesSeen() {
+    state.notices.forEach((n) => { n.seen_at = n.seen_at || new Date().toISOString(); });
+    renderNotices();
+    if (sb) { try { await sb.rpc("mark_invite_notices_seen"); } catch (e) { console.warn(e); } }
+  }
+
+  function onNoticeClick(e) {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    if (btn.dataset.act === "use") {
+      switchTab("account");
+      $("#inviteCode").value = btn.dataset.code;
+      $("#inviteCode").scrollIntoView({ block: "center" });
+      $("#inviteCode").focus();
+    }
+    markNoticesSeen();
   }
 
   /* ========== ログイン(Supabase) ========== */
@@ -977,6 +1117,9 @@
 
     if (agreed) {
       $("#accountEmail").textContent = state.user.email;
+      const m = state.user.user_metadata || {};
+      if ($("#accountName")) $("#accountName").textContent = m.family_kanji
+        ? `${m.family_kanji} ${m.given_kanji}(${m.family_kana} ${m.given_kana})` : "未登録";
       $("#accountCreated").textContent = fmtDate(state.user.created_at);
       const md = state.user.user_metadata || {};
       $("#accountTerms").textContent = md.terms_accepted_at
@@ -1005,6 +1148,7 @@
   async function refreshHistory() {
     await refreshQuestions();
     await Promise.all([refreshAdmin(), loadRedemptions()]);
+    await loadNotices();
     if (state.user && sb) {
       const { data, error } = await sb.from("answers")
         .select("question_id,title,seconds,created_at")
@@ -1057,12 +1201,14 @@
       const { email, password } = creds();
       if (!$("#agree").checked) { msg("新規登録には、利用規約への同意が必要です。"); return; }
       if (!email || password.length < 6) { msg("メールアドレスと、6文字以上のパスワードを入力してください。"); return; }
+      const nm = parseName($("#famKanji").value, $("#givKanji").value, $("#famKana").value, $("#givKana").value);
+      if (nm.error) { msg(nm.error); return; }
       msg("登録しています…");
       const { data, error } = await sb.auth.signUp({
         email, password,
         options: {
           emailRedirectTo: location.origin + location.pathname,
-          data: { terms_version: TERMS_VERSION, terms_accepted_at: new Date().toISOString() }
+          data: { ...nm.data, terms_version: TERMS_VERSION, terms_accepted_at: new Date().toISOString() }
         }
       });
       if (error) msg(authError(error));
@@ -1119,6 +1265,8 @@
       too_many_attempts: "失敗が続いたため、しばらく入力できません。10分ほど待ってからやり直してください。",
       not_authenticated: "ログインし直してください。"
     };
+    if ($("#inviteNotice")) $("#inviteNotice").onclick = onNoticeClick;
+    if ($("#sentCodes")) $("#sentCodes").onclick = onNoticeClick;
     $("#inviteForm").onsubmit = async (e) => {
       e.preventDefault();
       const im = (t) => { $("#inviteMsg").textContent = t; };
@@ -1145,6 +1293,7 @@
         im(`「${data.pack_name}」の質問${data.count}件を追加しました。「質問一覧」の「自分の質問」から使えます。`);
         await refreshQuestions();
         await loadRedemptions();
+        await loadNotices();     // 使ったコードは、届いているコードの一覧から消える
       } finally {
         btn.disabled = false;
       }
@@ -1247,6 +1396,7 @@
 
     bindAuthUI();
     $("#adminReload").onclick = loadAdmin;
+    if ($("#tgtForm")) bindTargetUI();
     $("#adminSearch").oninput = renderAdmin;
     renderList();
     renderParentOptions();

@@ -228,3 +228,20 @@ select { width: 100%; text-overflow: ellipsis; }
 .review button { width: 100%; }
 .review button.danger { margin-top: 0; background: #c62828; color: #fff; border: 0; font-weight: 700; }
 .settings .hint { margin: 0; }
+
+/* 氏名の入力欄(2列) */
+.namegrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.namegrid label { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); min-width: 0; }
+.namegrid input { width: 100%; }
+
+/* 招待コードが届いた時のお知らせ */
+.invite-notice { background: var(--surface); border: 2px solid var(--accent); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 12px; display: grid; gap: 8px; }
+.invite-notice p { margin: 0; font-weight: 700; }
+.invite-notice code, .sent-codes code { font-size: 1.05rem; letter-spacing: .05em; user-select: all; }
+.invite-notice .row, .sent-codes li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sent-codes { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 8px; }
+.sent-codes li { border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+.sent-codes .t { flex: 1 1 100%; }
+details.csv { margin-top: 10px; }
+details.csv textarea { width: 100%; box-sizing: border-box; margin: 8px 0; font: inherit; }
+.tgt-status { font-size: .85rem; opacity: .8; }

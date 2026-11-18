@@ -27,6 +27,9 @@
   </header>
 
   <main>
+    <!-- 招待コードが届いた時のお知らせ -->
+    <div id="inviteNotice" class="invite-notice" role="status" aria-live="polite" hidden></div>
+
     <!-- 練習 -->
     <section id="view-practice" class="view">
       <div class="settings">
@@ -137,6 +140,13 @@
           </label>
           <button type="submit" class="primary">ログイン</button>
           <hr>
+          <p class="hint">新規登録の方は、お名前も入力してください(招待コードの案内に使います)。</p>
+          <div class="namegrid">
+            <label>姓(漢字)<input id="famKanji" type="text" autocomplete="family-name" maxlength="20" placeholder="山田"></label>
+            <label>名(漢字)<input id="givKanji" type="text" autocomplete="given-name" maxlength="20" placeholder="太郎"></label>
+            <label>セイ(カタカナ)<input id="famKana" type="text" autocomplete="off" maxlength="30" placeholder="ヤマダ"></label>
+            <label>メイ(カタカナ)<input id="givKana" type="text" autocomplete="off" maxlength="30" placeholder="タロウ"></label>
+          </div>
           <label class="check">
             <input type="checkbox" id="agree">
             <span><a href="terms.html" target="_blank" rel="noopener">利用規約</a>に同意して新規登録する</span>
@@ -163,6 +173,7 @@
         <div class="card">
           <h2>アカウント情報</h2>
           <dl class="info">
+            <dt>お名前</dt><dd id="accountName"></dd>
             <dt>メールアドレス</dt><dd id="accountEmail"></dd>
             <dt>登録日</dt><dd id="accountCreated"></dd>
             <dt>利用規約</dt><dd id="accountTerms"></dd>
@@ -194,6 +205,10 @@
         <div class="card">
           <h2>招待コード</h2>
           <p class="hint">招待コードを入力すると、限定の質問セットが「自分の質問」に一括で追加されます。同じコードは、1つのアカウントで1回だけ使えます。</p>
+          <div id="sentBox" hidden>
+            <h2>届いている招待コード</h2>
+            <ul id="sentCodes" class="sent-codes"></ul>
+          </div>
           <form id="inviteForm" class="fields">
             <label>招待コード
               <input id="inviteCode" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="64" required>
@@ -216,12 +231,37 @@
         <p class="hint">責任者だけが見られる画面です。パスワードは、誰にも(責任者にも)見えません。</p>
         <div id="adminSummary" class="summary"></div>
         <div class="fields">
-          <input id="adminSearch" type="search" placeholder="メールアドレスで絞り込み" autocomplete="off">
+          <input id="adminSearch" type="search" placeholder="メールアドレス・お名前で絞り込み" autocomplete="off">
           <button id="adminReload" class="ghost">最新の状態に更新</button>
         </div>
       </div>
       <p id="adminMsg" class="notice" role="status" aria-live="polite"></p>
       <ul id="adminList" class="adminlist"></ul>
+
+      <div class="card" id="targetCard">
+        <h2>招待コードの送り先</h2>
+        <p class="hint">登録した氏名(漢字とカタカナの両方)が、新規登録した人の氏名と一致すると、その人がログインした時にアプリ内で招待コードが通知されます。</p>
+        <form id="tgtForm" class="fields">
+          <label>送る招待コード
+            <select id="tgtCode"></select>
+          </label>
+          <div class="namegrid">
+            <label>姓(漢字)<input id="tgtFamKanji" type="text" maxlength="20" required></label>
+            <label>名(漢字)<input id="tgtGivKanji" type="text" maxlength="20" required></label>
+            <label>セイ<input id="tgtFamKana" type="text" maxlength="30" required></label>
+            <label>メイ<input id="tgtGivKana" type="text" maxlength="30" required></label>
+          </div>
+          <button type="submit" class="primary">送り先に追加</button>
+        </form>
+        <details class="csv">
+          <summary>CSVでまとめて追加</summary>
+          <p class="hint">1行に1人。「姓,名,セイ,メイ」の順で、上で選んだ招待コードに対して追加します。(例: 山田,太郎,ヤマダ,タロウ)</p>
+          <textarea id="tgtCsv" rows="5" spellcheck="false"></textarea>
+          <button type="button" id="tgtCsvBtn" class="ghost">CSVを追加</button>
+        </details>
+        <p id="tgtMsg" class="notice" role="status" aria-live="polite"></p>
+        <ul id="tgtList" class="adminlist"></ul>
+      </div>
     </section>
   </main>
 
