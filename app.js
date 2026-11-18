@@ -49,6 +49,8 @@
     notices: [],                       // 氏名の一致で届いた、未使用の招待コード
     adminCodes: [],                    // 責任者画面: 招待コード一覧
     adminTargets: [],                  // 責任者画面: 招待コードの送り先
+    adminPacks: [],                    // 責任者画面: 質問セット
+    packQs: [],                        // 責任者画面: 選んだセットの質問
     adminRows: [],                     // 責任者画面の一覧
     unlocked: false,                   // 音声要素の「再生許可」済みか(iOS対策)
     phase: "idle",          // idle | playing | answering | done
@@ -270,7 +272,7 @@
       audio.onended = null; audio.onerror = null; audio.onplaying = null;
       state.forceTitle = true;
       $("#qtitle").textContent = q.title;
-      $("#status").textContent = `音声を再生できませんでした(${why})。質問文を読み上げます…`;
+      $("#status").textContent = why ? `音声を再生できませんでした(${why})。質問文を読み上げます…` : "質問文を読み上げています…";
       speak(q.title, finish, () => {
         if (token === state.token && state.phase === "playing") {
           $("#status").textContent = `読み上げが始まりません(${voiceInfo()})。端末の音量・消音スイッチ・日本語の音声を確認してください`;
@@ -294,7 +296,7 @@
       return resolveAudioUrl(q);
     }).then((url) => {
       if (token !== state.token) return;
-      if (!url) { fallback("音声のURLを取得できません"); return; }
+      if (!url) { fallback(q.audio || q.audio_path ? "音声のURLを取得できません" : null); return; }   // 音声ファイルが無い質問は、初めから自動音声
       audio.onended = finish;
       audio.onerror = () => fallback("ファイルが無い、または形式に未対応");
       audio.onplaying = () => {
@@ -921,6 +923,156 @@
     $("#adminMsg").textContent = "";
     renderAdmin();
     await loadTargets();
+    await loadPacks();
+  }
+
+  /* ----- 質問セット・音声ファイル・招待コードの管理(責任者) ----- */
+  const PACK_BUCKET = "pack-audio";
+  const PACK_ERR = { duplicate_code: "このコードはすでにあります。別のコードにしてください。", bad_code: "コードは、英数字・ハイフン・アンダーバーの4〜64文字にしてください。", forbidden: "責任者だけが操作できます。" };
+  const packMsg = (t) => { $("#packMsg").textContent = t; };
+  const rpcErr = (e) => PACK_ERR[(e.message || "").replace(/^.*?(duplicate_code|bad_code|forbidden).*$/, "$1")] || "操作に失敗しました。(Supabaseで step8 のSQLを実行済みか確認してください)";
+
+  async function loadPacks() {
+    if (!(sb && state.isAdmin) || !$("#packSel")) return;
+    const { data, error } = await sb.rpc("admin_list_packs");
+    if (error) { console.warn(error); packMsg("質問セットの読み込みに失敗しました。(Supabaseで step8 のSQLを実行済みか確認してください)"); return; }
+    state.adminPacks = data || [];
+    const sel = $("#packSel"), keep = sel.value;
+    sel.innerHTML = state.adminPacks.length
+      ? state.adminPacks.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}(${p.question_count}問)</option>`).join("")
+      : `<option value="">まだ質問セットがありません</option>`;
+    if (keep && state.adminPacks.some((p) => p.id === keep)) sel.value = keep;
+    await loadPackBody();
+  }
+
+  async function loadPackBody() {
+    const id = $("#packSel").value;
+    $("#packBody").hidden = !id;
+    if (!id) return;
+    const { data, error } = await sb.rpc("admin_list_pack_questions", { p_pack: id });
+    if (error) { console.warn(error); packMsg("質問の読み込みに失敗しました。"); return; }
+    state.packQs = data || [];
+    renderPackBody();
+  }
+
+  function renderPackBody() {
+    const id = $("#packSel").value;
+    // 招待コード
+    const codes = state.adminCodes.filter((c) => c.pack_id === id);
+    $("#packCodes").innerHTML = codes.length ? codes.map((c) => `
+      <li><p class="aemail"><code>${esc(c.code)}</code>${c.active ? "" : "(停止中)"}</p>
+        <dl class="adl"><dt>使用</dt><dd>${c.used}人${c.max_uses ? ` / 上限${c.max_uses}人` : "(上限なし)"}</dd>
+        <dt>期限</dt><dd>${c.expires_at ? fmtDate(c.expires_at) : "なし"}</dd></dl>
+        <button type="button" class="ghost" data-code-toggle="${esc(c.id)}" data-active="${c.active ? "1" : "0"}">${c.active ? "このコードを停止する" : "このコードを再開する"}</button></li>`).join("")
+      : `<li class="empty">このセットの招待コードは、まだありません。</li>`;
+
+    // 質問(親子の順に並べる)
+    const qs = state.packQs, byParent = new Map();
+    qs.forEach((q) => { const k = q.parent_pack_id || ""; (byParent.get(k) || byParent.set(k, []).get(k)).push(q); });
+    const defTitle = new Map(defaults().map((d) => [d.id, d.title]));
+    const rows = [];
+    const walk = (pid, depth) => (byParent.get(pid) || []).forEach((q) => { rows.push({ q, depth }); walk(q.id, depth + 1); });
+    walk("", 0);
+    $("#packQs").innerHTML = rows.length ? rows.map(({ q, depth }) => `
+      <li style="margin-left:${Math.min(depth, 4) * 12}px">
+        <p class="aemail">${esc(q.title)}${q.audio_path ? '<span class="badge-ok">音声あり</span>' : '<span class="badge-tts">自動音声</span>'}</p>
+        ${q.parent_default_id ? `<p class="tgt-status">標準の質問「${esc(defTitle.get(q.parent_default_id) || q.parent_default_id)}」の深掘り</p>` : ""}
+        <button type="button" class="ghost del" data-pq-del="${esc(q.id)}">削除</button></li>`).join("")
+      : `<li class="empty">このセットには、まだ質問がありません。</li>`;
+
+    // 深掘りの元(親)の選択肢
+    $("#pqParent").innerHTML = `<option value="">なし(最初に出る質問)</option>` +
+      (rows.length ? `<optgroup label="このセットの質問">${rows.map(({ q, depth }) => `<option value="p:${esc(q.id)}">${"　".repeat(depth)}${esc(q.title)}</option>`).join("")}</optgroup>` : "") +
+      `<optgroup label="標準の質問">${defaults().map((d) => `<option value="d:${esc(d.id)}">${esc(d.title)}</option>`).join("")}</optgroup>`;
+  }
+
+  const randomCode = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", buf = new Uint8Array(8);
+    crypto.getRandomValues(buf);
+    const s = [...buf].map((b) => chars[b % chars.length]).join("");
+    return s.slice(0, 4) + "-" + s.slice(4);
+  };
+
+  function bindPackUI() {
+    $("#packSel").onchange = loadPackBody;
+    $("#packCreateBtn").onclick = async () => {
+      const name = $("#packName").value.trim();
+      if (!name) { packMsg("セットの名前を入力してください。"); return; }
+      const { data, error } = await sb.rpc("admin_create_pack", { p_name: name, p_description: $("#packDesc").value.trim() });
+      if (error) { console.warn(error); packMsg(rpcErr(error)); return; }
+      $("#packName").value = ""; $("#packDesc").value = "";
+      packMsg(`「${name}」を作りました。質問と招待コードを追加してください。`);
+      await loadPacks();
+      $("#packSel").value = data; await loadPackBody();
+    };
+
+    $("#codeGen").onclick = () => { $("#codeText").value = randomCode(); };
+    $("#codeForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const max = $("#codeMax").value ? parseInt($("#codeMax").value, 10) : null;
+      const exp = $("#codeExp").value ? new Date($("#codeExp").value + "T23:59:59+09:00").toISOString() : null;
+      const { error } = await sb.rpc("admin_create_code", { p_pack: $("#packSel").value, p_code: $("#codeText").value.trim(), p_max_uses: max, p_expires: exp });
+      if (error) { console.warn(error); packMsg(rpcErr(error)); return; }
+      packMsg(`招待コード「${$("#codeText").value.trim()}」を発行しました。`);
+      $("#codeForm").reset();
+      await loadTargets(); renderPackBody();
+    };
+    $("#packCodes").onclick = async (e) => {
+      const b = e.target.closest("button[data-code-toggle]");
+      if (!b) return;
+      const { error } = await sb.rpc("admin_set_code_active", { p_id: b.dataset.codeToggle, p_active: b.dataset.active !== "1" });
+      if (error) { packMsg(rpcErr(error)); return; }
+      await loadTargets(); renderPackBody();
+    };
+
+    $("#pqForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const pack = $("#packSel").value, title = $("#pqTitle").value.trim();
+      if (!pack || !title) return;
+      const file = $("#pqFile").files[0];
+      let path = null;
+      if (file) {
+        const ext = (file.name.split(".").pop() || "").toLowerCase();
+        if (!MIME_BY_EXT[ext]) { packMsg("音声ファイルは mp3 / m4a / wav / ogg / aac / webm にしてください。"); return; }
+        if (file.size > MAX_FILE) { packMsg("ファイルが大きすぎます(10MBまで)。"); return; }
+        const uid = crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random().toString(36).slice(2);
+        path = `${pack}/${uid}.${ext}`;
+      }
+      const pv = $("#pqParent").value;
+      const maxSort = state.packQs.reduce((m, q) => Math.max(m, q.sort_order), 0);
+      const btn = $("#pqBtn"); btn.disabled = true; packMsg("追加しています…");
+      try {
+        if (file) {
+          const up = await sb.storage.from(PACK_BUCKET).upload(path, file, { contentType: MIME_BY_EXT[path.split(".").pop()], upsert: false });
+          if (up.error) { console.warn(up.error); packMsg("音声のアップロードに失敗しました。"); return; }
+        }
+        const { error } = await sb.rpc("admin_add_pack_question", {
+          p_pack: pack, p_title: title, p_audio_path: path,
+          p_parent_pack: pv.startsWith("p:") ? pv.slice(2) : null,
+          p_parent_default: pv.startsWith("d:") ? pv.slice(2) : null,
+          p_sort: maxSort + 10
+        });
+        if (error) {
+          console.warn(error);
+          if (path) await sb.storage.from(PACK_BUCKET).remove([path]);   // 登録に失敗したら、アップロードした音声も消す
+          packMsg(rpcErr(error)); return;
+        }
+        $("#pqForm").reset();
+        packMsg(`「${title}」を追加しました。${file ? "" : "(音声なし: 自動音声で読み上げられます)"}コードを使用済みの人には、次のログイン時に届きます。`);
+        await loadPacks();
+      } finally { btn.disabled = false; }
+    };
+
+    $("#packQs").onclick = async (e) => {
+      const b = e.target.closest("button[data-pq-del]");
+      if (!b) return;
+      if (!confirm("この質問(と、その深掘り質問)を、セットから削除します。すでに届いた人の「自分の質問」からも消えます。よろしいですか?")) return;
+      const { data, error } = await sb.rpc("admin_delete_pack_question", { p_id: b.dataset.pqDel });
+      if (error) { console.warn(error); packMsg(rpcErr(error)); return; }
+      if (data && data.length) await sb.storage.from(PACK_BUCKET).remove(data);
+      packMsg("削除しました。");
+      await loadPacks();
+    };
   }
 
   /* ----- 招待コードの送り先(責任者) ----- */
@@ -1145,7 +1297,19 @@
   }
 
   // 表示する記録を、ログイン状態に合わせて読み込み直す
+  // 使用済みの招待コードのセットに、あとから追加された質問を受け取る
+  async function syncPacks() {
+    if (!(state.user && sb)) return;
+    try {
+      const { data, error } = await sb.rpc("sync_my_packs");
+      if (error) { console.warn(error); return; }
+      if (data?.added) notify(`招待コードのセットに追加された質問${data.added}件を、「自分の質問」に追加しました`);
+      else if (data?.pending) notify(`質問の上限(${MAX_QUESTIONS}件)のため、追加された質問${data.pending}件を受け取れていません。不要な質問を削除してください`);
+    } catch (e) { console.warn(e); }
+  }
+
   async function refreshHistory() {
+    await syncPacks();
     await refreshQuestions();
     await Promise.all([refreshAdmin(), loadRedemptions()]);
     await loadNotices();
@@ -1397,6 +1561,7 @@
     bindAuthUI();
     $("#adminReload").onclick = loadAdmin;
     if ($("#tgtForm")) bindTargetUI();
+    if ($("#packCard")) bindPackUI();
     $("#adminSearch").oninput = renderAdmin;
     renderList();
     renderParentOptions();

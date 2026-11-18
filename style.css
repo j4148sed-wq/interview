@@ -245,3 +245,11 @@ select { width: 100%; text-overflow: ellipsis; }
 details.csv { margin-top: 10px; }
 details.csv textarea { width: 100%; box-sizing: border-box; margin: 8px 0; font: inherit; }
 .tgt-status { font-size: .85rem; opacity: .8; }
+
+/* 責任者: 質問セットの管理 */
+.fieldlabel { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); min-width: 0; margin-bottom: 8px; }
+#packCard h2 { margin-top: 16px; }
+#packCard h2:first-child { margin-top: 0; }
+#packQs li { padding: 10px; }
+#packQs .aemail { font-weight: 600; }
+.badge-ok, .badge-tts { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: .75rem; border: 1px solid var(--line); font-weight: 400; }

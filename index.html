@@ -238,6 +238,52 @@
       <p id="adminMsg" class="notice" role="status" aria-live="polite"></p>
       <ul id="adminList" class="adminlist"></ul>
 
+      <div class="card" id="packCard">
+        <h2>質問セットと招待コード</h2>
+        <p class="hint">招待コードで配る質問(音声ファイル)を、ここで追加できます。追加した質問は、すでにコードを使った人にも、次のログイン時に届きます。音声ファイルがない質問や、読み込めなかった質問は、質問文が自動音声で読み上げられます。</p>
+        <label class="fieldlabel">質問セット
+          <select id="packSel"></select>
+        </label>
+        <details class="csv">
+          <summary>新しい質問セットを作る</summary>
+          <div class="fields">
+            <input id="packName" type="text" maxlength="100" placeholder="セットの名前(例: 就活セットA)">
+            <input id="packDesc" type="text" maxlength="200" placeholder="説明(任意)">
+            <button type="button" id="packCreateBtn" class="ghost">セットを作る</button>
+          </div>
+        </details>
+
+        <div id="packBody" hidden>
+          <h2>このセットの招待コード</h2>
+          <ul id="packCodes" class="adminlist"></ul>
+          <form id="codeForm" class="fields">
+            <input id="codeText" type="text" maxlength="64" placeholder="新しい招待コード(英数字・ハイフン 4文字以上)" autocapitalize="characters" autocomplete="off" spellcheck="false" required>
+            <div class="namegrid">
+              <label>使える人数(空欄=無制限)<input id="codeMax" type="number" min="1" inputmode="numeric"></label>
+              <label>期限(空欄=なし)<input id="codeExp" type="date"></label>
+            </div>
+            <div class="namegrid">
+              <button type="button" id="codeGen" class="ghost">コードを自動で作る</button>
+              <button type="submit" class="primary">招待コードを発行</button>
+            </div>
+          </form>
+
+          <h2>このセットの質問</h2>
+          <ul id="packQs" class="adminlist"></ul>
+          <form id="pqForm" class="fields">
+            <input id="pqTitle" type="text" maxlength="200" placeholder="質問文(自動音声の読み上げにも使います)" required>
+            <label class="fieldlabel">音声ファイル(任意・mp3 / m4a / wav など、10MBまで)
+              <input id="pqFile" type="file" accept="audio/*,.mp3,.m4a,.wav,.ogg,.aac,.webm">
+            </label>
+            <label class="fieldlabel">深掘りの元になる質問
+              <select id="pqParent"></select>
+            </label>
+            <button type="submit" class="primary" id="pqBtn">質問を追加</button>
+          </form>
+        </div>
+        <p id="packMsg" class="notice" role="status" aria-live="polite"></p>
+      </div>
+
       <div class="card" id="targetCard">
         <h2>招待コードの送り先</h2>
         <p class="hint">登録した氏名(漢字とカタカナの両方)が、新規登録した人の氏名と一致すると、その人がログインした時にアプリ内で招待コードが通知されます。</p>
