@@ -429,6 +429,7 @@
   function closeReviewAndDelete() {
     stt.gen++;                 // 実行中の照合の結果は、捨てる
     if (stt.busy) stopStt();   // 処理も止める
+    stopKuro();                // 読みの辞書のメモリも解放する
     pauseReviewAudio();
     $("#reviewList").querySelectorAll("audio").forEach((a) => { a.removeAttribute("src"); a.load(); });
     $("#reviewList").textContent = "";
@@ -537,9 +538,7 @@
   }
 
   /* ========== 原稿との照合(AIの文字起こしは、すべてこの端末の中で行う) ========== */
-  const KURO_JS = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js";
-  const KURO_DIC = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/";
-  const stt = { worker: null, handlers: new Map(), seq: 0, model: "", busy: false, kuro: null, gen: 0 };
+  const stt = { worker: null, handlers: new Map(), seq: 0, model: "", busy: false, gen: 0 };
 
   // AIの処理は、画面とは別のスレッド(stt-worker.js)で行う。処理中も、画面は固まらない
   function sttWorker() {
@@ -586,23 +585,23 @@
     try { localStorage.setItem(key, "1"); } catch (_) {}
   }
 
-  // 読み(かな)を調べる辞書。読み込めなかった時は null を返し、文字どおりの比較に切り替える
-  function loadKuromoji() {
-    if (stt.kuro) return stt.kuro;
-    stt.kuro = new Promise((resolve) => {
-      const fail = () => { stt.kuro = null; resolve(null); };
-      setTimeout(fail, 60000);                  // 何も返ってこない場合も、1分で諦める
-      const s = document.createElement("script");
-      s.src = KURO_JS;
-      s.onload = () => {
-        try { window.kuromoji.builder({ dicPath: KURO_DIC }).build((err, tk) => (err ? fail() : resolve(tk))); }
-        catch (_) { fail(); }
-      };
-      s.onerror = fail;
-      document.head.append(s);
+  // 読み(かな)を調べる辞書は、画面とは別のスレッド(kuro-worker.js)で動かす。
+  // 読み込みに失敗した時(または20秒かかった時)は、文字どおりの比較に切り替える
+  const kuro = { worker: null, handlers: new Map(), seq: 0 };
+  function kuroCall(msg) {
+    return new Promise((resolve, reject) => {
+      if (!kuro.worker) {
+        const w = new Worker("kuro-worker.js");
+        w.onmessage = (e) => { const h = kuro.handlers.get(e.data.id); if (h) h(e.data); };
+        w.onerror = (e) => { console.warn("kuro-worker のエラー", e); [...kuro.handlers.values()].forEach((h) => h({ type: "error", message: (e && e.message) || "辞書を開始できません" })); };
+        kuro.worker = w;
+      }
+      const id = ++kuro.seq;
+      kuro.handlers.set(id, (m) => { kuro.handlers.delete(id); if (m.type === "error") reject(new Error(m.message)); else resolve(m); });
+      kuro.worker.postMessage({ ...msg, id });
     });
-    return stt.kuro;
   }
+  function stopKuro() { if (kuro.worker) kuro.worker.terminate(); kuro.worker = null; kuro.handlers.clear(); }
 
   async function decode16k(b) {
     const buf = await b.arrayBuffer();
@@ -643,17 +642,17 @@
   }
 
   // 文章を「表記 + 読み」の並びにする(辞書が無い時は、1文字ずつ)
-  function toKanaTokens(tk, text) {
-    if (!tk) return [...String(text)].map((ch) => ({ surface: ch, kana: nk(ch) }));
-    return tk.tokenize(String(text)).map((t) => {
-      const r = t.pronunciation && t.pronunciation !== "*" ? t.pronunciation : (t.reading && t.reading !== "*" ? t.reading : t.surface_form);
-      return { surface: t.surface_form, kana: nk(r) };
+  function toKanaTokens(raw, text) {
+    if (!raw) return [...String(text)].map((ch) => ({ surface: ch, kana: nk(ch) }));
+    return raw.map((t) => {
+      const r = t.pron && t.pron !== "*" ? t.pron : (t.reading && t.reading !== "*" ? t.reading : t.surface);
+      return { surface: t.surface, kana: nk(r) };
     });
   }
 
   // 原稿の読みが、話した内容の読みに「順番どおりに」含まれているかを数える(LCS)
-  function compareReadings(script, spoken, tk) {
-    const st = toKanaTokens(tk, script), sp = toKanaTokens(tk, spoken);
+  function compareReadings(script, spoken, raws) {
+    const st = toKanaTokens(raws && raws[0], script), sp = toKanaTokens(raws && raws[1], spoken);
     const a = [], owner = [];
     st.forEach((t, ti) => [...t.kana].forEach((ch) => { a.push(ch); owner.push(ti); }));
     const b = sp.flatMap((t) => [...t.kana]);
@@ -704,10 +703,10 @@
     document.querySelectorAll("#reviewList .chk-btn").forEach((b) => (b.disabled = true));
     res.textContent = "";
     try {
-      const kuroP = loadKuromoji();              // 読みの辞書は、AIの準備と並行して読み込む
+      const kuroP = kuroCall({ type: "init" }).then(() => true, (e) => { console.warn("読みの辞書:", e); return false; });   // 辞書は、AIの準備と並行して別スレッドで読み込む
       await loadModel(say);
       say("読みを調べる辞書を読み込んでいます…");
-      const tk = await Promise.race([kuroP, new Promise((r) => setTimeout(() => r(null), 20000))]);   // 20秒で諦めて、文字どおりの比較にする
+      const kuroOk = await Promise.race([kuroP, new Promise((r) => setTimeout(() => r(false), 20000))]);   // 20秒で諦めて、文字どおりの比較にする
       say("音声を読み込んでいます…");
       const data = preprocessAudio(await decode16k(it.blob));
       say("文字に起こしています…(端末によっては、数十秒かかります)");
@@ -715,13 +714,15 @@
       const out = await sttCall({ type: "run", audio: data }, [data.buffer]);
       const chunks = out.chunks && out.chunks.length ? out.chunks : [{ text: out.text || "" }];
       const text = cleanOutro(chunks, script);
-      const cmp = compareReadings(script, text, tk);
+      let raws = null;
+      if (kuroOk) { try { raws = (await kuroCall({ type: "tokenize", texts: [script, text] })).out; } catch (e) { console.warn(e); } }
+      const cmp = compareReadings(script, text, raws);
       if (!alive()) return;
       it.result = `
         <p class="score">原稿との一致: ${cmp.pct}%</p>
         <p class="out-label">原稿(読みが合わなかった言葉は赤)</p><div class="out">${cmp.html}</div>
         <p class="out-label">AIが聞き取った文章</p><div class="out">${esc(text || "(認識できませんでした)")}</div>
-        <p class="rmsg">${tk ? "同じ読みの言葉(例: 専攻/先行)は、一致として数えています。" : "読みの辞書を読み込めなかったため、文字どおりに比べました。"}聞き取りの誤りもあるため、目安として見てください。</p>`;
+        <p class="rmsg">${raws ? "同じ読みの言葉(例: 専攻/先行)は、一致として数えています。" : "読みの辞書を読み込めなかったため、文字どおりに比べました。"}聞き取りの誤りもあるため、目安として見てください。</p>`;
       res.innerHTML = it.result; msg.textContent = "";
     } catch (e) {
       if (!alive()) return;
