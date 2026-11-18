@@ -52,6 +52,12 @@
         </label>
         <label class="check"><input type="checkbox" id="showTitle" checked> 質問文を表示する</label>
         <label class="check"><input type="checkbox" id="recordAnswers"> 回答を録音して、終了後に聞き返す</label>
+        <label id="sttModelWrap" hidden>原稿との照合に使うAIの大きさ
+          <select id="sttModel">
+            <option value="Xenova/whisper-small">small(目安 約250MB・正確・やや重い)</option>
+            <option value="Xenova/whisper-base">base(目安 約80MB・軽いが誤認識が増える)</option>
+          </select>
+        </label>
         <p class="hint" id="recHint" hidden>録音はこの端末のメモリだけに置かれ、サーバーには送られません。聞き返したあと閉じると削除されます。スタート時にマイクの許可が必要です。</p>
       </div>
 
@@ -311,7 +317,21 @@
     </section>
   </main>
 
-    <!-- 回答の聞き返し(閉じるには、必ず「削除して閉じる」を押す) -->
+    <!-- 原稿の入力 -->
+  <div id="scriptDlg" class="review" role="dialog" aria-modal="true" aria-labelledby="scriptTitle" hidden>
+    <div class="review-box script-box">
+      <h2 id="scriptTitle">原稿</h2>
+      <p class="hint">暗記する回答の文章を入力します。聞き返し画面で、録音と照合できます。原稿はあなたのアカウントにだけ保存され、他の人には見えません。</p>
+      <textarea id="scriptText" rows="8" maxlength="3000" placeholder="例: 私の長所は、リーダーシップです。…"></textarea>
+      <p class="hint" id="scriptCount">0 / 3000文字</p>
+      <p id="scriptMsg" class="notice" role="status" aria-live="polite"></p>
+      <button id="scriptSave" class="primary" type="button">保存</button>
+      <button id="scriptDel" class="ghost" type="button">原稿を削除</button>
+      <button id="scriptClose" class="ghost" type="button">閉じる</button>
+    </div>
+  </div>
+
+  <!-- 回答の聞き返し(閉じるには、必ず「削除して閉じる」を押す) -->
   <div id="review" class="review" role="dialog" aria-modal="true" aria-labelledby="reviewTitle" hidden>
     <div class="review-box">
       <h2 id="reviewTitle">回答を聞き返す</h2>

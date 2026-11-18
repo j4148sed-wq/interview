@@ -253,3 +253,16 @@ details.csv textarea { width: 100%; box-sizing: border-box; margin: 8px 0; font:
 #packQs li { padding: 10px; }
 #packQs .aemail { font-weight: 600; }
 .badge-ok, .badge-tts { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: .75rem; border: 1px solid var(--line); font-weight: 400; }
+
+/* 原稿・原稿との照合 */
+button.scr { flex: none; background: none; border: 1px solid var(--line); color: var(--ink); border-radius: 10px; padding: 8px 10px; font: inherit; font-size: .85rem; }
+.script-box textarea { width: 100%; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px; resize: vertical; min-height: 140px; }
+.script-box { grid-template-rows: none; overflow-y: auto; }
+.chk { display: grid; gap: 6px; }
+.chk button { width: 100%; }
+.chk .rmsg { margin: 0; font-size: .85rem; color: var(--muted); }
+.chk .score { margin: 0; font-size: 1.2rem; font-weight: 700; }
+.chk .out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border-radius: 10px; padding: 8px 10px; margin: 0; font-size: .95rem; }
+.chk .out-label { margin: 4px 0 0; font-size: .8rem; color: var(--muted); }
+.miss { background: color-mix(in srgb, #c62828 25%, transparent); color: #c62828; border-radius: 3px; }
+@media (prefers-color-scheme: dark) { .miss { color: #ff8a80; } }

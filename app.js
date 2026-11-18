@@ -6,7 +6,7 @@
   const LS_SETTINGS = "si_settings_v1";
   // 利用規約を改定したら、この日付を変える(terms.html の制定日と合わせる)。
   // 変えると、既存ユーザーにも次回ログイン時に再同意が求められます。
-  const TERMS_VERSION = "2026-11-18.1";
+  const TERMS_VERSION = "2026-11-18.2";
   const BUCKET = "question-audio";          // Supabase Storage のバケット名
   const MAX_FILE = 10 * 1024 * 1024;        // 音声ファイルの上限 10MB
   const MAX_QUESTIONS = 100;                // 1人あたりの自作質問の上限(DB側にも同じ制限あり)
@@ -35,7 +35,7 @@
   }
 
   const state = {
-    settings: { mode: "random", timerBase: "end", showTitle: true, recordAnswers: false, source: "default", ...loadJSON(LS_SETTINGS, {}) },
+    settings: { mode: "random", timerBase: "end", showTitle: true, recordAnswers: false, source: "default", sttModel: "Xenova/whisper-small", ...loadJSON(LS_SETTINGS, {}) },
     local: loadJSON(LS_HISTORY, []),   // この端末に保存した記録
     history: [],                       // 画面に表示する記録(ログイン中=アカウント / 未ログイン=端末)
     user: null,
@@ -46,6 +46,8 @@
     forceTitle: false,                 // 音声が再生できなかった時は、設定に関係なく質問文を表示する
     isAdmin: false,                    // 責任者か
     redemptions: [],                   // 使用済みの招待コード
+    scripts: new Map(),                // 原稿(質問id → 文章)
+    scriptFor: null,                   // 原稿を編集中の質問
     notices: [],                       // 氏名の一致で届いた、未使用の招待コード
     adminCodes: [],                    // 責任者画面: 招待コード一覧
     adminTargets: [],                  // 責任者画面: 招待コードの送り先
@@ -408,6 +410,7 @@
       const au = document.createElement("audio");
       au.controls = true; au.preload = "metadata"; au.setAttribute("playsinline", ""); au.src = it.url;
       li.append(t, s, au);
+      li.append(buildCheckBox(it));
       list.append(li);
     });
     $("#reviewConfirm").hidden = true;
@@ -424,6 +427,7 @@
   const pauseReviewAudio = () => $("#reviewList").querySelectorAll("audio").forEach((a) => a.pause());
 
   function closeReviewAndDelete() {
+    stt.gen++;                 // 実行中の照合の結果は、捨てる
     pauseReviewAudio();
     $("#reviewList").querySelectorAll("audio").forEach((a) => { a.removeAttribute("src"); a.load(); });
     $("#reviewList").textContent = "";
@@ -469,6 +473,238 @@
       else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     });
+  }
+
+  /* ========== 原稿(アカウントに保存) ========== */
+  async function loadScripts() {
+    state.scripts = new Map();
+    if (state.user && sb) {
+      const { data, error } = await sb.from("question_scripts").select("question_id,script").limit(300);
+      if (error) console.warn(error);
+      else (data || []).forEach((r) => state.scripts.set(r.question_id, r.script));
+    }
+    renderList();
+  }
+
+  function openScript(qid) {
+    const q = getQuestions().find((x) => x.id === qid);
+    if (!q || !$("#scriptDlg")) return;
+    state.scriptFor = qid;
+    $("#scriptTitle").textContent = `原稿: ${q.title}`;
+    $("#scriptText").value = state.scripts.get(qid) || "";
+    $("#scriptDel").hidden = !state.scripts.has(qid);
+    $("#scriptMsg").textContent = "";
+    updateScriptCount();
+    $("#scriptDlg").hidden = false;
+    document.body.style.overflow = "hidden";
+    document.querySelector("header.top").inert = true;
+    document.querySelector("main").inert = true;
+    $("#scriptText").focus();
+  }
+  function closeScript() {
+    $("#scriptDlg").hidden = true;
+    state.scriptFor = null;
+    if ($("#review").hidden) document.body.style.overflow = "";
+    document.querySelector("header.top").inert = false;
+    document.querySelector("main").inert = false;
+  }
+  const updateScriptCount = () => { $("#scriptCount").textContent = `${[...$("#scriptText").value].length} / 3000文字`; };
+
+  function bindScriptUI() {
+    if (!$("#scriptDlg")) return;
+    $("#scriptText").oninput = updateScriptCount;
+    $("#scriptClose").onclick = closeScript;
+    $("#scriptDlg").addEventListener("keydown", (e) => { if (e.key === "Escape") closeScript(); });
+    $("#scriptSave").onclick = async () => {
+      const qid = state.scriptFor, text = $("#scriptText").value.trim();
+      if (!qid || !sb || !state.user) return;
+      if (!text) { $("#scriptMsg").textContent = "原稿を入力してください。(消す場合は「原稿を削除」)"; return; }
+      $("#scriptSave").disabled = true;
+      const { error } = await sb.from("question_scripts")
+        .upsert({ user_id: state.user.id, question_id: qid, script: text }, { onConflict: "user_id,question_id" });
+      $("#scriptSave").disabled = false;
+      if (error) { console.warn(error); $("#scriptMsg").textContent = "保存に失敗しました。(Supabaseで step9 のSQLを実行済みか確認してください)"; return; }
+      state.scripts.set(qid, text); renderList(); closeScript(); notify("原稿を保存しました");
+    };
+    $("#scriptDel").onclick = async () => {
+      const qid = state.scriptFor;
+      if (!qid || !sb || !confirm("この原稿を削除します。よろしいですか?")) return;
+      const { error } = await sb.from("question_scripts").delete().eq("question_id", qid);
+      if (error) { console.warn(error); $("#scriptMsg").textContent = "削除に失敗しました。"; return; }
+      state.scripts.delete(qid); renderList(); closeScript(); notify("原稿を削除しました");
+    };
+  }
+
+  /* ========== 原稿との照合(AIの文字起こしは、すべてこの端末の中で行う) ========== */
+  const STT_LIB = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1";
+  const KURO_JS = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js";
+  const KURO_DIC = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/";
+  const stt = { pipe: null, model: "", busy: false, kuro: null, gen: 0 };
+
+  async function getTranscriber(say) {
+    const model = state.settings.sttModel || "Xenova/whisper-small";
+    if (stt.pipe && stt.model === model) return stt.pipe;
+    const key = "si_stt_ready_" + model;
+    let ready = false;
+    try { ready = localStorage.getItem(key) === "1"; } catch (_) {}
+    const size = model.endsWith("small") ? "約250MB" : "約80MB";
+    if (!ready && !confirm(`初回は、AIのモデル(${size})をダウンロードします。Wi-Fi での利用をおすすめします。音声はこの端末の外に送られません。続けますか?`)) {
+      const e = new Error("cancel"); e.cancel = true; throw e;
+    }
+    say("AIの部品を読み込んでいます…");
+    const { pipeline, env } = await import(STT_LIB);
+    env.allowLocalModels = false;
+    const files = new Map();
+    stt.pipe = await pipeline("automatic-speech-recognition", model, {
+      device: "wasm", dtype: "q8",
+      progress_callback: (p) => {
+        if (p.status === "progress" && p.file) {
+          files.set(p.file, p);
+          let l = 0, t = 0; files.forEach((f) => { l += f.loaded || 0; t += f.total || 0; });
+          if (t) say(`AIのモデルをダウンロード中… ${(l / 1048576).toFixed(0)} / ${(t / 1048576).toFixed(0)} MB`);
+        }
+      }
+    });
+    stt.model = model;
+    try { localStorage.setItem(key, "1"); } catch (_) {}
+    return stt.pipe;
+  }
+
+  // 読み(かな)を調べる辞書。読み込めなかった時は null を返し、文字どおりの比較に切り替える
+  function loadKuromoji() {
+    if (stt.kuro) return stt.kuro;
+    stt.kuro = new Promise((resolve) => {
+      const fail = () => { stt.kuro = null; resolve(null); };
+      const s = document.createElement("script");
+      s.src = KURO_JS;
+      s.onload = () => {
+        try { window.kuromoji.builder({ dicPath: KURO_DIC }).build((err, tk) => (err ? fail() : resolve(tk))); }
+        catch (_) { fail(); }
+      };
+      s.onerror = fail;
+      document.head.append(s);
+    });
+    return stt.kuro;
+  }
+
+  async function decode16k(b) {
+    const buf = await b.arrayBuffer();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AC();
+    const decoded = await new Promise((res, rej) => ctx.decodeAudioData(buf.slice(0), res, rej));
+    if (ctx.close) ctx.close();
+    const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+    const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
+    return (await off.startRendering()).getChannelData(0);
+  }
+
+  // 音量をそろえ、前後の無音を取り除く(無音が長いと、話していない定型文が出やすいため)
+  function preprocessAudio(data) {
+    let peak = 0; for (let i = 0; i < data.length; i++) { const v = Math.abs(data[i]); if (v > peak) peak = v; }
+    if (peak < 1e-4) return data;
+    const gain = Math.min(0.9 / peak, 30), win = 800, rms = [];
+    for (let i = 0; i + win <= data.length; i += win) { let s = 0; for (let j = i; j < i + win; j++) s += data[j] * data[j]; rms.push(Math.sqrt(s / win) * gain); }
+    const th = 0.02;
+    const first = rms.findIndex((v) => v > th); let last = rms.length - 1; while (last > 0 && rms[last] <= th) last--;
+    if (first < 0) return data;
+    const s0 = Math.max(0, (first - 6) * win), s1 = Math.min(data.length, (last + 7) * win);
+    const out = new Float32Array(s1 - s0);
+    for (let i = 0; i < out.length; i++) out[i] = Math.max(-1, Math.min(1, data[s0 + i] * gain));
+    return out;
+  }
+
+  const OUTRO = /(ご視聴|チャンネル登録|次回の動画|また次回|お会いしましょう|ありがとうございました|おやすみなさい|字幕)/;
+  const nk = (s) => String(s || "").normalize("NFKC").replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60))
+    .replace(/[\s、。,.!?「」『』()・…\-〜~]/g, "");
+  function cleanOutro(chunks, script) {
+    const keep = chunks.slice(), sn = nk(script);
+    while (keep.length > 1) {
+      const tx = (keep[keep.length - 1].text || "").trim();
+      if (OUTRO.test(tx) && !sn.includes(nk(tx))) keep.pop(); else break;
+    }
+    return keep.map((c) => c.text).join("").trim();
+  }
+
+  // 文章を「表記 + 読み」の並びにする(辞書が無い時は、1文字ずつ)
+  function toKanaTokens(tk, text) {
+    if (!tk) return [...String(text)].map((ch) => ({ surface: ch, kana: nk(ch) }));
+    return tk.tokenize(String(text)).map((t) => {
+      const r = t.pronunciation && t.pronunciation !== "*" ? t.pronunciation : (t.reading && t.reading !== "*" ? t.reading : t.surface_form);
+      return { surface: t.surface_form, kana: nk(r) };
+    });
+  }
+
+  // 原稿の読みが、話した内容の読みに「順番どおりに」含まれているかを数える(LCS)
+  function compareReadings(script, spoken, tk) {
+    const st = toKanaTokens(tk, script), sp = toKanaTokens(tk, spoken);
+    const a = [], owner = [];
+    st.forEach((t, ti) => [...t.kana].forEach((ch) => { a.push(ch); owner.push(ti); }));
+    const b = sp.flatMap((t) => [...t.kana]);
+    const n = a.length, m = b.length;
+    const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const hit = new Array(n).fill(false);
+    let i = 0, j = 0;
+    while (i < n && j < m) { if (a[i] === b[j]) { hit[i] = true; i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++; }
+    const bad = new Set(); hit.forEach((h, k) => { if (!h) bad.add(owner[k]); });
+    const html = st.map((t, ti) => (bad.has(ti) ? `<span class="miss">${esc(t.surface)}</span>` : esc(t.surface))).join("");
+    return { pct: n ? Math.round((dp[0][0] / n) * 100) : 0, matched: dp[0][0], total: n, html };
+  }
+
+  function buildCheckBox(it) {
+    const box = document.createElement("div"); box.className = "chk";
+    const script = state.scripts.get(it.qid);
+    if (!script) {
+      const p = document.createElement("p"); p.className = "rmsg";
+      p.textContent = "原稿が未登録です。(質問一覧の「原稿」から登録すると、照合できます)";
+      box.append(p); return box;
+    }
+    const btn = document.createElement("button"); btn.type = "button"; btn.className = "ghost chk-btn";
+    btn.textContent = "原稿と照合する(AIで文字起こし)";
+    const msg = document.createElement("p"); msg.className = "rmsg";
+    const res = document.createElement("div");
+    btn.onclick = () => runCheck(it, script, btn, msg, res);
+    box.append(btn, msg, res);
+    if (it.result) res.innerHTML = it.result;
+    return box;
+  }
+
+  async function runCheck(it, script, btn, msg, res) {
+    if (stt.busy) { msg.textContent = "ほかの照合を実行中です。終わってから押してください。"; return; }
+    const gen = stt.gen;
+    const alive = () => gen === stt.gen;
+    const say = (t) => { if (alive()) msg.textContent = t; };
+    stt.busy = true;
+    document.querySelectorAll("#reviewList .chk-btn").forEach((b) => (b.disabled = true));
+    res.textContent = "";
+    try {
+      const pipe = await getTranscriber(say);
+      say("読みを調べる辞書を読み込んでいます…");
+      const tk = await loadKuromoji();
+      say("音声を読み込んでいます…");
+      const data = preprocessAudio(await decode16k(it.blob));
+      say("文字に起こしています…(端末によっては、数十秒かかります)");
+      await new Promise((r) => setTimeout(r, 30));
+      const out = await pipe(data, { language: "japanese", task: "transcribe", chunk_length_s: 30, stride_length_s: 5, return_timestamps: true });
+      const chunks = Array.isArray(out.chunks) && out.chunks.length ? out.chunks : [{ text: out.text || "" }];
+      const text = cleanOutro(chunks, script);
+      const cmp = compareReadings(script, text, tk);
+      if (!alive()) return;
+      it.result = `
+        <p class="score">原稿との一致: ${cmp.pct}%</p>
+        <p class="out-label">原稿(読みが合わなかった言葉は赤)</p><div class="out">${cmp.html}</div>
+        <p class="out-label">AIが聞き取った文章</p><div class="out">${esc(text || "(認識できませんでした)")}</div>
+        <p class="rmsg">${tk ? "同じ読みの言葉(例: 専攻/先行)は、一致として数えています。" : "読みの辞書を読み込めなかったため、文字どおりに比べました。"}聞き取りの誤りもあるため、目安として見てください。</p>`;
+      res.innerHTML = it.result; msg.textContent = "";
+    } catch (e) {
+      if (!alive()) return;
+      if (e.cancel) msg.textContent = "キャンセルしました。";
+      else { console.error(e); msg.textContent = "照合に失敗しました: " + (e.message || e); }
+    } finally {
+      stt.busy = false;
+      document.querySelectorAll("#reviewList .chk-btn").forEach((b) => (b.disabled = false));
+    }
   }
 
   /* ========== タイマー ========== */
@@ -596,7 +832,7 @@
       try {
         const blob = await stopAnswerRec();
         if (blob && cur && sec !== null) {
-          ans.items.push({ title: cur.title, seconds: sec, blob, url: URL.createObjectURL(blob) });
+          ans.items.push({ qid: cur.id, title: cur.title, seconds: sec, blob, url: URL.createObjectURL(blob) });
         }
         if (sec !== null && cur) {
           $("#timer").textContent = fmt(sec);
@@ -644,6 +880,7 @@
     <li style="--d:${q.depth}">
       <span class="t">${esc(q.title)}${q.parentLabel ? `<small class="sub">「${esc(q.parentLabel)}」の深掘り</small>` : ""}</span>
       ${q.imported ? '<span class="badge own">限定</span>' : ""}
+      <button class="scr" data-scr="${esc(q.id)}" aria-label="原稿を入力・編集">原稿${state.scripts.has(q.id) ? " ✓" : ""}</button>
       <button class="play" data-id="${esc(q.id)}" aria-label="この質問を出題">▶</button>
       ${q.owner_id ? `<button class="del" data-del="${esc(q.id)}">削除</button>` : ""}
     </li>`;
@@ -755,6 +992,8 @@
     const paths = state.userQuestions.filter((x) => ids.includes(x.id) && x.audio_bucket !== "pack-audio").map((x) => x.audio_path);
     const { error } = await sb.from("user_questions").delete().in("id", ids);
     if (error) { listMsg(`削除に失敗しました: ${error.message}`); return; }
+    sb.from("question_scripts").delete().in("question_id", ids).then(() => {}, () => {});   // 原稿も消す(失敗しても続行)
+    ids.forEach((x) => state.scripts.delete(x));
     if (paths.length) {   // 招待コード由来の質問は、共有の音声なので Storage からは消さない
       const rm = await sb.storage.from(BUCKET).remove(paths);
       if (rm.error) console.warn(rm.error);
@@ -1311,6 +1550,7 @@
   async function refreshHistory() {
     await syncPacks();
     await refreshQuestions();
+    await loadScripts();
     await Promise.all([refreshAdmin(), loadRedemptions()]);
     await loadNotices();
     if (state.user && sb) {
@@ -1510,9 +1750,16 @@
       state.settings.recordAnswers = on;
       saveJSON(LS_SETTINGS, state.settings);
       $("#recHint").hidden = !on;
+      $("#sttModelWrap").hidden = !on;
       if (!on) { discardAnswerRec(); releaseMic(); } else { ans.denied = false; }
     };
     }
+    if ($("#sttModel")) {
+      $("#sttModel").value = state.settings.sttModel;
+      $("#sttModelWrap").hidden = !state.settings.recordAnswers;
+      $("#sttModel").onchange = (e) => { state.settings.sttModel = e.target.value; saveJSON(LS_SETTINGS, state.settings); stt.pipe = null; };
+    }
+    bindScriptUI();
     if ($("#review")) bindReviewUI();
     $("#showTitle").onchange = (e) => { state.settings.showTitle = e.target.checked; saveJSON(LS_SETTINGS, state.settings); setPhase(state.phase); };
 
@@ -1527,6 +1774,8 @@
     $("#view-list").onclick = (e) => {
       const del = e.target.closest("button.del");
       if (del) { deleteQuestion(del.dataset.del); return; }
+      const scr = e.target.closest("button.scr");
+      if (scr) { openScript(scr.dataset.scr); return; }
       const btn = e.target.closest("button.play");
       if (!btn) return;
       const q = getQuestions().find((x) => x.id === btn.dataset.id);
