@@ -37,6 +37,10 @@
             <option value="pick">選んで出題</option>
           </select>
         </label>
+        <label hidden>出題する質問
+          <select id="source"><option value="default">標準の質問(自分で追加した質問を含む)</option></select>
+          <small class="hint">標準の質問と、招待コードの質問は、同時には出題されません。</small>
+        </label>
         <label>計測の起点
           <select id="timerBase">
             <option value="end">質問の再生終了から</option>

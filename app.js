@@ -35,7 +35,7 @@
   }
 
   const state = {
-    settings: { mode: "random", timerBase: "end", showTitle: true, recordAnswers: false, ...loadJSON(LS_SETTINGS, {}) },
+    settings: { mode: "random", timerBase: "end", showTitle: true, recordAnswers: false, source: "default", ...loadJSON(LS_SETTINGS, {}) },
     local: loadJSON(LS_HISTORY, []),   // この端末に保存した記録
     history: [],                       // 画面に表示する記録(ログイン中=アカウント / 未ログイン=端末)
     user: null,
@@ -69,6 +69,23 @@
   const flatten = (parentId = null, depth = 0, pool = getQuestions()) =>
     childrenOf(parentId, pool).flatMap((q) => [{ ...q, depth }, ...flatten(q.id, depth + 1, pool)]);
 
+  // 出題に使う質問の集まり。標準の質問と、招待コードの質問は、同時には出題しない。
+  //   source = "default"  : 標準の質問 + 自分で追加した質問(招待コードの質問は含めない)
+  //   source = コードのID : その招待コードで取り込んだ質問だけ
+  function activeSource() {
+    const s = state.settings.source;
+    return s && s !== "default" && state.userQuestions.some((q) => q.source_code_id === s) ? s : "default";
+  }
+  function playPool() {
+    const src = activeSource();
+    const list = src === "default"
+      ? defaults().concat(state.userQuestions.filter((q) => !q.imported))
+      : state.userQuestions.filter((q) => q.source_code_id === src);
+    const ids = new Set(list.map((q) => q.id));
+    // 親が集まりの外にある質問は、トップ階層として扱う
+    return list.map((q) => (q.parent_id && !ids.has(q.parent_id) ? { ...q, parent_id: null } : q));
+  }
+
   // 「自分の質問」の表示用。親が標準の質問(または無し)のものがルートになる
   function flattenMine() {
     const mine = state.userQuestions;
@@ -92,13 +109,13 @@
       q = list.splice(Math.floor(Math.random() * list.length), 1)[0];
     } else {
       // 2) 深掘りが終わったらトップ階層からランダム(全部出し終えたら null を返して終了)
-      const pool = childrenOf(null).filter((t) => !state.askedTop.has(t.id));
+      const pool = childrenOf(null, playPool()).filter((t) => !state.askedTop.has(t.id));
       if (!pool.length) return null;
       q = pool[Math.floor(Math.random() * pool.length)];
       state.askedTop.add(q.id);
     }
     // 3) この質問に子がいれば、次はその子たちから出す
-    const kids = childrenOf(q.id);
+    const kids = childrenOf(q.id, playPool());
     if (kids.length) state.stack.push([...kids]);
     return q;
   }
@@ -114,7 +131,7 @@
     if (state.settings.mode === "sequential") return state.seqIndex < state.order.length;
     if (state.settings.mode === "random") {
       if (state.stack.some((l) => l.length)) return true;
-      return childrenOf(null).some((t) => !state.askedTop.has(t.id));
+      return childrenOf(null, playPool()).some((t) => !state.askedTop.has(t.id));
     }
     return false;
   }
@@ -122,7 +139,7 @@
   function resetSession() {
     state.stack = [];
     state.askedTop.clear();
-    state.order = flatten();
+    state.order = flatten(null, 0, playPool());
     state.seqIndex = 0;
   }
 
@@ -650,7 +667,7 @@
       state.userQuestions = [];
     } else {
       const { data, error } = await sb.from("user_questions")
-        .select("id,user_id,title,audio_path,audio_bucket,parent_id,created_at")
+        .select("id,user_id,title,audio_path,audio_bucket,parent_id,source_code_id,created_at")
         .order("created_at", { ascending: true })
         .limit(MAX_QUESTIONS);
       if (error) {
@@ -661,7 +678,7 @@
         const known = new Set([...defaults().map((q) => q.id), ...data.map((r) => r.id)]);
         state.userQuestions = data.map((r, i) => ({
           id: r.id, title: r.title, audio: null, audio_path: r.audio_path,
-          audio_bucket: r.audio_bucket, imported: r.audio_bucket === "pack-audio",
+          audio_bucket: r.audio_bucket, imported: r.audio_bucket === "pack-audio", source_code_id: r.source_code_id || null,
           parent_id: r.parent_id && known.has(r.parent_id) ? r.parent_id : null, // 親が見つからなければトップ階層に
           sort_order: 1000 + i, owner_id: r.user_id
         }));
@@ -669,6 +686,7 @@
     }
     renderList();
     renderParentOptions();
+    renderSourceOptions();
   }
 
   const MIME_BY_EXT = { mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", ogg: "audio/ogg", webm: "audio/webm", aac: "audio/aac" };
@@ -849,13 +867,28 @@
     return withTime ? `${date} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : date;
   }
 
+  // 「出題する質問」の選択肢(標準 / 取り込んだ招待コードごと)
+  function renderSourceOptions() {
+    const sel = $("#source");
+    if (!sel) return;
+    const packs = new Map();
+    state.userQuestions.forEach((q) => { if (q.source_code_id) packs.set(q.source_code_id, 0); });
+    state.redemptions.forEach((r) => { if (packs.has(r.code_id)) packs.set(r.code_id, r.pack_name); });
+    let n = 0;
+    sel.innerHTML = `<option value="default">標準の質問(自分で追加した質問を含む)</option>` +
+      [...packs].map(([id, name]) => `<option value="${esc(id)}">${esc(name || "招待コードの質問 " + (++n))}(招待コード)</option>`).join("");
+    sel.value = activeSource();
+    sel.closest("label").hidden = packs.size === 0;   // 招待コードを使っていなければ、選択欄は出さない
+  }
+
   async function loadRedemptions() {
     if (!(state.user && sb)) { state.redemptions = []; renderRedemptions(); return; }
     const { data, error } = await sb.from("invite_redemptions")
-      .select("pack_name,question_count,created_at").order("created_at", { ascending: false });
+      .select("code_id,pack_name,question_count,created_at").order("created_at", { ascending: false });
     if (error) console.warn(error);
     state.redemptions = error ? [] : data;
     renderRedemptions();
+    renderSourceOptions();
   }
 
   function renderRedemptions() {
@@ -1144,6 +1177,12 @@
     $("#showTitle").checked = state.settings.showTitle;
 
     $("#mode").onchange = (e) => { state.settings.mode = e.target.value; saveJSON(LS_SETTINGS, state.settings); stopAudio(); resetTimer(); clearAnswerData(); state.current = null; setPhase("idle"); };
+    if ($("#source")) {
+      $("#source").onchange = (e) => {
+        state.settings.source = e.target.value; saveJSON(LS_SETTINGS, state.settings);
+        stopAudio(); resetTimer(); clearAnswerData(); state.current = null; setPhase("idle");
+      };
+    }
     $("#timerBase").onchange = (e) => { state.settings.timerBase = e.target.value; saveJSON(LS_SETTINGS, state.settings); };
     // index.html が古いままでも、画面全体が止まらないようにする
     if ($("#recordAnswers") && $("#recHint")) {
