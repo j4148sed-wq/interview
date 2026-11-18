@@ -575,6 +575,7 @@
     if (stt.kuro) return stt.kuro;
     stt.kuro = new Promise((resolve) => {
       const fail = () => { stt.kuro = null; resolve(null); };
+      setTimeout(fail, 60000);                  // 何も返ってこない場合も、1分で諦める
       const s = document.createElement("script");
       s.src = KURO_JS;
       s.onload = () => {
@@ -674,14 +675,23 @@
     if (stt.busy) { msg.textContent = "ほかの照合を実行中です。終わってから押してください。"; return; }
     const gen = stt.gen;
     const alive = () => gen === stt.gen;
-    const say = (t) => { if (alive()) msg.textContent = t; };
+    // いま何をしているかと、その経過時間を表示する(止まって見える時に、どこで待っているか分かるように)
+    let stage = "", stageAt = Date.now();
+    const render = () => {
+      if (!alive() || !stage) return;
+      const s = Math.round((Date.now() - stageAt) / 1000);
+      msg.textContent = `${stage}(経過 ${s}秒)` + (s >= 40 ? " — 時間がかかっています。端末が重い場合は、設定でAIの大きさを base に変えると速くなります" : "");
+    };
+    const say = (t) => { if (t !== stage && !/ダウンロード中/.test(t)) stageAt = Date.now(); stage = t; render(); };
+    const ticker = setInterval(render, 1000);
     stt.busy = true;
     document.querySelectorAll("#reviewList .chk-btn").forEach((b) => (b.disabled = true));
     res.textContent = "";
     try {
+      const kuroP = loadKuromoji();              // 読みの辞書は、AIの準備と並行して読み込む
       const pipe = await getTranscriber(say);
       say("読みを調べる辞書を読み込んでいます…");
-      const tk = await loadKuromoji();
+      const tk = await Promise.race([kuroP, new Promise((r) => setTimeout(() => r(null), 20000))]);   // 20秒で諦めて、文字どおりの比較にする
       say("音声を読み込んでいます…");
       const data = preprocessAudio(await decode16k(it.blob));
       say("文字に起こしています…(端末によっては、数十秒かかります)");
@@ -702,6 +712,7 @@
       if (e.cancel) msg.textContent = "キャンセルしました。";
       else { console.error(e); msg.textContent = "照合に失敗しました: " + (e.message || e); }
     } finally {
+      clearInterval(ticker);
       stt.busy = false;
       document.querySelectorAll("#reviewList .chk-btn").forEach((b) => (b.disabled = false));
     }
