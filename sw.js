@@ -2,7 +2,7 @@
 // ・常にネットワークを先に見に行き(=更新がすぐ反映される)、繋がらない時だけキャッシュを使う
 // ・音声ファイル(Rangeリクエスト)と他サイト(Supabase など)への通信には関与しない
 // 更新してもキャッシュが古いままの時は、下の CACHE の番号を上げる。
-const CACHE = "self-interview-v12";
+const CACHE = "self-interview-v13";
 const SHELL = [
   "./", "index.html", "style.css", "app.js", "config.js", "data/questions.js",
   "terms.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"

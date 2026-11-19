@@ -32,14 +32,20 @@
 
     <!-- 練習 -->
     <section id="view-practice" class="view">
+      <div id="remindBar" class="remind-bar" role="status" hidden>
+        <span>⏰ 今日の練習がまだです。</span><button id="remindClose" class="ghost" type="button">閉じる</button>
+      </div>
+      <div id="streakBar" class="streak" aria-live="polite"></div>
       <div class="settings">
         <label>出題モード
           <select id="mode">
             <option value="random">ランダム(深掘りあり)</option>
             <option value="sequential">順番</option>
             <option value="pick">選んで出題</option>
+            <option value="exam">本番モード(深掘りあり・聞き返しなし)</option>
           </select>
         </label>
+        <p class="hint" id="modeHint" hidden>本番モード: 質問文を隠し、録音・聞き返しはしません。目標時間(なければ設定した既定の時間)を超えると知らせます。</p>
         <label hidden>出題する質問
           <select id="source"><option value="default">標準の質問(自分で追加した質問を含む)</option></select>
           <small class="hint">標準の質問と、招待コードの質問は、同時には出題されません。</small>
@@ -51,6 +57,35 @@
           </select>
         </label>
         <label class="check"><input type="checkbox" id="showTitle" checked> 質問文を表示する</label>
+        <details class="more">
+          <summary>目標時間・速度・リマインドの設定</summary>
+          <div class="settings more-body">
+            <label>質問音声の再生速度
+              <select id="speed">
+                <option value="0.75">0.75倍(ゆっくり)</option>
+                <option value="1">1倍(標準)</option>
+                <option value="1.25">1.25倍</option>
+                <option value="1.5">1.5倍</option>
+                <option value="2">2倍</option>
+              </select>
+            </label>
+            <label>回答時間の目標(秒・既定)
+              <input id="defaultTarget" type="number" inputmode="numeric" min="0" max="600" placeholder="例: 60(空欄=目標なし)">
+              <small class="hint">質問ごとの目標は、質問一覧の ⚙ で変えられます。超えるとタイマーが色づきます。</small>
+            </label>
+            <label class="check"><input type="checkbox" id="weakFocus"> 苦手な質問を多めに出す(ランダム・本番モード)</label>
+            <label hidden>出題するタグ
+              <select id="tagFilter"></select>
+              <small class="hint">質問一覧の ⚙ でタグを付けると、タグごとに絞って出題できます。</small>
+            </label>
+            <label>練習のリマインド(時刻)
+              <input id="remindTime" type="time">
+              <small class="hint">その時刻を過ぎても、今日の練習がなければ、アプリを開いたときにお知らせします。</small>
+            </label>
+            <button id="icsBtn" class="ghost" type="button">毎日の予定をカレンダーに追加(.ics)</button>
+            <p class="hint" id="remindMsg" role="status"></p>
+          </div>
+        </details>
         <label class="check"><input type="checkbox" id="recordAnswers"> 回答を録音して、終了後に聞き返す</label>
         <label id="sttModelWrap" hidden>原稿との照合に使うAIの大きさ(ベータ版)
           <select id="sttModel">
@@ -119,6 +154,9 @@
     <section id="view-history" class="view">
       <p id="doneNote" class="done-note" role="status" hidden>すべての質問が終了しました。お疲れさまでした。今回の回答時間は、下の「最近の記録」に残っています。</p>
       <p id="historySource" class="hint"></p>
+      <div id="streakBar2" class="streak"></div>
+      <h2>成長グラフ</h2>
+      <div id="charts" class="charts"></div>
       <h2>質問ごとの平均回答時間</h2>
       <ul id="stats" class="stats"></ul>
       <h2>最近の記録</h2>
@@ -318,6 +356,25 @@
       </div>
     </section>
   </main>
+
+    <!-- 質問ごとの目標時間・タグ -->
+  <div id="metaDlg" class="review" role="dialog" aria-modal="true" aria-labelledby="metaHead" hidden>
+    <div class="review-box script-box">
+      <h2 id="metaHead">目標時間・タグ</h2>
+      <p class="hint" id="metaTitle"></p>
+      <label class="meta-f">この質問の目標時間(秒)
+        <input id="metaTarget" type="number" inputmode="numeric" min="0" max="600">
+      </label>
+      <label class="meta-f">タグ(「、」や空白で区切って5つまで。例: 自己PR、志望動機)
+        <input id="metaTags" type="text" maxlength="80" list="metaTagList" autocomplete="off">
+        <datalist id="metaTagList"></datalist>
+      </label>
+      <p class="hint">この設定は、この端末にだけ保存されます。</p>
+      <p id="metaMsg" class="notice" role="status" aria-live="polite"></p>
+      <button id="metaSave" class="primary" type="button">保存</button>
+      <button id="metaClose" class="ghost" type="button">閉じる</button>
+    </div>
+  </div>
 
     <!-- 初回ログイン時の使い方ガイド -->
   <div id="tutorial" class="review tutorial" role="dialog" aria-modal="true" aria-labelledby="tutTitle" hidden>

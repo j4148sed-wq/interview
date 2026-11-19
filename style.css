@@ -283,3 +283,31 @@ button.scr { flex: none; background: none; border: 1px solid var(--line); color:
 .tut-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .tut-actions button { width: auto; min-width: 88px; }
 .tab.tut-hl { outline: 3px solid var(--accent); outline-offset: -3px; }
+
+/* 追加機能: 連続日数・グラフ・リマインド・タグ・目標 */
+.streak { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.streak span { font-size: .8rem; color: var(--muted); }
+.remind-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-radius: var(--radius); background: color-mix(in srgb, #f9a825 30%, var(--surface)); }
+.remind-bar button { width: auto; padding: 6px 12px; }
+details.more { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; background: var(--surface); }
+details.more summary { cursor: pointer; font-size: .9rem; }
+.more-body { margin-top: 10px; }
+.chart { width: 100%; height: auto; display: block; }
+.chart .ax { stroke: var(--line); stroke-width: 1; }
+.chart .tx { fill: var(--muted); font-size: 9px; }
+.chart .bar { fill: var(--accent); }
+.chart .ln { fill: none; stroke: var(--accent); stroke-width: 2; }
+.chart .dot { fill: var(--accent); }
+.chart .ref { stroke: #c62828; stroke-width: 1; stroke-dasharray: 4 3; }
+.charts h3 { margin: 12px 0 2px; font-size: .85rem; color: var(--muted); font-weight: 600; }
+.timer.over { color: #c62828; }
+@media (prefers-color-scheme: dark) { .timer.over { color: #ff8a70; } .chart .ref { stroke: #ff8a70; } }
+.num.over { color: #c62828; }
+.num.ok { color: #2e7d32; }
+@media (prefers-color-scheme: dark) { .num.over { color: #ff8a70; } .num.ok { color: #81c784; } }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.tag, .tgt { font-size: .7rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.tgt { border-color: var(--accent); color: var(--ink); }
+button.meta { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color: var(--ink); cursor: pointer; }
+.meta-f { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); }
+#doneNote { white-space: pre-line; }

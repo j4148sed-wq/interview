@@ -4,6 +4,8 @@
   /* ========== 設定・保存 ========== */
   const LS_HISTORY = "si_history_v1";
   const LS_SETTINGS = "si_settings_v1";
+  const LS_META = "si_qmeta_v1";       // 質問ごとの目標時間・タグ(この端末だけ)
+  const LS_CHECKS = "si_checks_v1";    // AI照合の一致率の推移(この端末だけ。音声や文章は保存しない)
   // 利用規約を改定したら、この日付を変える(terms.html の制定日と合わせる)。
   // 変えると、既存ユーザーにも次回ログイン時に再同意が求められます。
   const TERMS_VERSION = "2026-11-18.2";
@@ -36,7 +38,8 @@
 
   const IS_MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   const state = {
-    settings: { mode: "random", timerBase: "end", showTitle: true, recordAnswers: false, source: "default", sttModel: IS_MOBILE ? "Xenova/whisper-base" : "Xenova/whisper-small", ...loadJSON(LS_SETTINGS, {}) },
+    settings: { mode: "random", timerBase: "end", showTitle: true, recordAnswers: false, source: "default", sttModel: IS_MOBILE ? "Xenova/whisper-base" : "Xenova/whisper-small",
+      speed: 1, defaultTarget: 60, weakFocus: false, tagFilter: "", remindTime: "", ...loadJSON(LS_SETTINGS, {}) },
     local: loadJSON(LS_HISTORY, []),   // この端末に保存した記録
     history: [],                       // 画面に表示する記録(ログイン中=アカウント / 未ログイン=端末)
     user: null,
@@ -89,6 +92,14 @@
     const list = src === "default"
       ? defaults().concat(state.userQuestions.filter((q) => !q.imported))
       : state.userQuestions.filter((q) => q.source_code_id === src);
+    // タグで絞る: そのタグが付いた質問と、その深掘り質問だけを出題する
+    const tag = state.settings.tagFilter;
+    if (tag && allTags().includes(tag)) {
+      const keep = new Set();
+      const add = (id) => { if (keep.has(id)) return; keep.add(id); list.filter((x) => x.parent_id === id).forEach((x) => add(x.id)); };
+      list.filter((q) => qTags(q).includes(tag)).forEach((q) => add(q.id));
+      list.splice(0, list.length, ...list.filter((q) => keep.has(q.id)));
+    }
     const ids = new Set(list.map((q) => q.id));
     // 親が集まりの外にある質問は、トップ階層として扱う
     return list.map((q) => (q.parent_id && !ids.has(q.parent_id) ? { ...q, parent_id: null } : q));
@@ -107,8 +118,40 @@
   const descendantIds = (id) => state.userQuestions.filter((q) => q.parent_id === id)
     .flatMap((q) => [q.id, ...descendantIds(q.id)]);
 
+  /* ========== 質問ごとの目標時間・タグ / 苦手の判定 / 本番モード ========== */
+  const meta = loadJSON(LS_META, {});
+  const checks = loadJSON(LS_CHECKS, {});
+  const isExam = () => state.settings.mode === "exam";
+  const isRandomLike = () => state.settings.mode === "random" || isExam();
+  const recOn = () => !!state.settings.recordAnswers && !isExam();     // 本番モードでは録音・聞き返しをしない
+  const speedOf = () => { const v = Number(state.settings.speed); return v >= 0.5 && v <= 2 ? v : 1; };
+  const qTarget = (id) => { const t = Number(meta[id]?.target); return t > 0 ? t : Number(state.settings.defaultTarget) || 0; };   // 秒。0 = 目標なし
+  const qTags = (q) => [...new Set([...(q.tags || []), ...(meta[q.id]?.tags || [])])];
+  const allTags = () => [...new Set(getQuestions().flatMap(qTags))].sort();
+  const dayKey = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+
+  // 苦手度(0〜1): 目標より長くかかる質問と、AI照合の一致率が低い質問ほど高い
+  function weakScore(id) {
+    const rows = state.history.filter((r) => r.question_id === id);
+    let w = 0;
+    const tg = qTarget(id);
+    if (rows.length && tg > 0) {
+      const avg = rows.slice(-5).reduce((s, r) => s + r.seconds, 0) / Math.min(5, rows.length);
+      w = Math.max(w, Math.min(1, (avg / tg - 1) / 0.5));
+    }
+    const c = checks[id];
+    if (c && c.length) w = Math.max(w, Math.min(1, (90 - c[c.length - 1].pct) / 40));
+    return Math.max(0, w);
+  }
+  // 苦手な質問(深掘りも含む。最大3つ)
+  const weakAll = () => playPool().map((q) => ({ q, w: weakScore(q.id) }))
+    .filter((x) => x.w >= 0.3).sort((a, b) => b.w - a.w).slice(0, 3).map((x) => x.q);
+  // トップ階層の質問の苦手度は、その深掘り質問も含めた中で、いちばん高いもの
+  const subtreeWeak = (id, pool) => Math.max(weakScore(id), ...pool.filter((x) => x.parent_id === id).map((x) => subtreeWeak(x.id, pool)), 0);
+
   /* ========== 出題ロジック ========== */
   function pickRandom() {
+    if (state.weakQueue && state.weakQueue.length) return state.weakQueue.shift();   // 苦手な質問の、もう一度の出題
     // 1) 深掘り中なら、その子の中からランダム
     while (state.stack.length && state.stack[state.stack.length - 1].length === 0) state.stack.pop();
     let q;
@@ -117,9 +160,21 @@
       q = list.splice(Math.floor(Math.random() * list.length), 1)[0];
     } else {
       // 2) 深掘りが終わったらトップ階層からランダム(全部出し終えたら null を返して終了)
-      const pool = childrenOf(null, playPool()).filter((t) => !state.askedTop.has(t.id));
+      const all = playPool();
+      let pool = childrenOf(null, all).filter((t) => !state.askedTop.has(t.id));
+      // 苦手な質問を多めに: 一巡したあと、苦手な質問(最大3つ)を、もう一度出す
+      if (!pool.length && state.settings.weakFocus && !state.weakRound) {
+        state.weakRound = true;
+        state.weakQueue = weakAll();
+        return state.weakQueue.shift() || null;
+      }
       if (!pool.length) return null;
-      q = pool[Math.floor(Math.random() * pool.length)];
+      if (state.settings.weakFocus && !state.weakRound) {          // 一巡目は、苦手な質問ほど先に出やすくする
+        const ws = pool.map((t) => 1 + 3 * subtreeWeak(t.id, all));
+        let r = Math.random() * ws.reduce((s, x) => s + x, 0), i = 0;
+        while (i < pool.length - 1 && (r -= ws[i]) > 0) i++;
+        q = pool[i];
+      } else q = pool[Math.floor(Math.random() * pool.length)];
       state.askedTop.add(q.id);
     }
     // 3) この質問に子がいれば、次はその子たちから出す
@@ -129,7 +184,7 @@
   }
 
   function nextQuestion() {
-    if (state.settings.mode === "random") return pickRandom();
+    if (isRandomLike()) return pickRandom();
     if (state.settings.mode === "sequential") return state.order[state.seqIndex++] ?? null;
     return null; // pick モードは一覧から選ぶ
   }
@@ -137,9 +192,11 @@
   // この後に出す質問が、まだ残っているか
   function hasMore() {
     if (state.settings.mode === "sequential") return state.seqIndex < state.order.length;
-    if (state.settings.mode === "random") {
+    if (isRandomLike()) {
       if (state.stack.some((l) => l.length)) return true;
-      return childrenOf(null, playPool()).some((t) => !state.askedTop.has(t.id));
+      if (childrenOf(null, playPool()).some((t) => !state.askedTop.has(t.id))) return true;
+      if (state.weakQueue && state.weakQueue.length) return true;
+      return !!state.settings.weakFocus && !state.weakRound && weakAll().length > 0;
     }
     return false;
   }
@@ -149,6 +206,9 @@
     state.askedTop.clear();
     state.order = flatten(null, 0, playPool());
     state.seqIndex = 0;
+    state.weakRound = false;
+    state.weakQueue = [];
+    state.examLog = [];
   }
 
   /* ========== 再生 ========== */
@@ -224,7 +284,7 @@
     try {
       const u = new SpeechSynthesisUtterance(text);
       u.lang = "ja-JP";
-      u.volume = 1; u.rate = 1; u.pitch = 1;
+      u.volume = 1; u.rate = speedOf(); u.pitch = 1;
       const v = jaVoice();
       if (v) u.voice = v;
       keepUtt = u;
@@ -273,8 +333,8 @@
       clearTimeout(watch);
       console.warn("音声の再生に失敗:", why, audio.error);
       audio.onended = null; audio.onerror = null; audio.onplaying = null;
-      state.forceTitle = true;
-      $("#qtitle").textContent = q.title;
+      state.forceTitle = !isExam();
+      if (!isExam()) $("#qtitle").textContent = q.title;
       $("#status").textContent = why ? `音声を再生できませんでした(${why})。質問文を読み上げます…` : "質問文を読み上げています…";
       speak(q.title, finish, () => {
         if (token === state.token && state.phase === "playing") {
@@ -289,7 +349,7 @@
     unlockAll();
     // 録音する設定なら、マイクの許可が決まってから質問を流す(許可の確認中に質問が始まらないように)
     let micWait = Promise.resolve(true);
-    if (state.settings.recordAnswers) {
+    if (recOn()) {
       micWait = ensureMic();
       if (!(ans.stream && ans.stream.active) && !ans.denied) $("#status").textContent = "マイクの許可を待っています…";
     }
@@ -305,9 +365,11 @@
       audio.onplaying = () => {
         clearTimeout(watch);
         const d = audio.duration;   // 終了の通知が来ない場合に備えて、長さ+3秒で次へ進む
-        if (isFinite(d) && d > 0) watch = setTimeout(finish, (d + 3) * 1000);
+        try { audio.playbackRate = speedOf(); } catch (_) {}
+        if (isFinite(d) && d > 0) watch = setTimeout(finish, (d / speedOf() + 3) * 1000);
       };
       audio.src = url;
+      try { audio.defaultPlaybackRate = speedOf(); audio.playbackRate = speedOf(); } catch (_) {}
       watch = setTimeout(() => fallback("読み込みの時間切れ"), 10000);
       audio.play().catch((e) => fallback(e && e.name === "NotAllowedError" ? "再生が許可されませんでした" : "再生を開始できません"));
     }).catch((e) => fallback("音声のURLを取得できません"));
@@ -347,7 +409,7 @@
   // 回答の録音を始める(質問の再生が終わって「回答してください」になった時)
   function startAnswerRec(token) {
     discardAnswerRec();
-    if (!state.settings.recordAnswers) return;
+    if (!recOn()) return;
     ans.startP = ensureMic().then((ok) => {
       if (!ok || token !== state.token || state.phase !== "answering") return;
       const mime = pickRecMime();
@@ -725,6 +787,7 @@
       const text = cleanOutro(chunks, script);
       const cmp = compareChars(script, text);
       if (!alive()) return;
+      try { const c = (checks[it.qid] = checks[it.qid] || []); c.push({ t: Date.now(), pct: cmp.pct }); if (c.length > 30) c.splice(0, c.length - 30); saveJSON(LS_CHECKS, checks); } catch (_) {}   // 一致率だけを、この端末に残す
       it.result = `
         <p class="score">原稿との一致: ${cmp.pct}% <span class="beta">ベータ版</span></p>
         <p class="rmsg beta-note">⚠ この機能はベータ版です。AIの文字起こしは完全ではなく、正しく話していても聞き間違えられることがあります。結果は目安として、聞き返しの音声と合わせて確認してください。</p>
@@ -744,11 +807,23 @@
   }
 
   /* ========== タイマー ========== */
+  const fmtT = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;   // 目標時間の表示用(例 1:00)
   const fmt = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
-  function updateTimer() { $("#timer").textContent = fmt((performance.now() - state.startTime) / 1000); }
+  function updateTimer() {
+    const sec = (performance.now() - state.startTime) / 1000;
+    $("#timer").textContent = fmt(sec);
+    const tg = state.current && state.phase === "answering" ? qTarget(state.current.id) : 0;
+    const over = tg > 0 && sec > tg;
+    $("#timer").classList.toggle("over", over);
+    if (over && !state.overNotified) {
+      state.overNotified = true;
+      if (isExam()) { $("#status").textContent = "制限時間です。回答をまとめてください"; try { navigator.vibrate && navigator.vibrate(200); } catch (_) {} }
+    }
+  }
   function startTimer() {
     clearInterval(state.tick);
     state.startTime = performance.now();
+    state.overNotified = false;
     state.tick = setInterval(updateTimer, 100);
     updateTimer();
   }
@@ -756,6 +831,7 @@
     clearInterval(state.tick);
     state.startTime = 0;
     $("#timer").textContent = "0:00.0";
+    $("#timer").classList.remove("over");
   }
   // 計測中なら経過秒を返し、計測していなければ null
   function stopTimer() {
@@ -773,8 +849,8 @@
     const next = $("#nextBtn");
     const title = $("#qtitle");
 
-    title.textContent = q && (state.settings.showTitle || state.forceTitle) && phase !== "done" ? q.title : "";
-    $("#replayBtn").hidden = !(q && (phase === "playing" || phase === "answering"));
+    title.textContent = q && !isExam() && (state.settings.showTitle || state.forceTitle) && phase !== "done" ? q.title : "";
+    $("#replayBtn").hidden = isExam() || !(q && (phase === "playing" || phase === "answering"));
     next.classList.toggle("next", phase === "answered");
 
     if (phase === "idle") {
@@ -837,6 +913,9 @@
     stopAudio(); resetTimer();
     state.current = null;
     state.justFinished = true;
+    const L = state.examLog || [];
+    state.examSummary = isExam() && L.length
+      ? `本番モードの結果: ${L.length}問 / 平均 ${fmt(L.reduce((s, x) => s + x.sec, 0) / L.length)} / 目標時間を超えた質問 ${L.filter((x) => x.tg > 0 && x.sec > x.tg).length}問` : "";
     setPhase("done");
     switchTab("history");
     discardAnswerRec(); releaseMic();
@@ -848,7 +927,7 @@
     if (state.phase === "idle" || state.phase === "done") {
       state.justFinished = false;
       clearAnswerData();
-      if (state.settings.recordAnswers) {
+      if (recOn()) {
         unlockAll();                       // マイク許可の確認を待つ間に、タップの効力が切れないよう先に解禁
         state.saving = true;
         try { await ensureMic(); } finally { state.saving = false; }
@@ -872,12 +951,22 @@
         }
         if (sec !== null && cur) {
           $("#timer").textContent = fmt(sec);
+          if (isExam()) (state.examLog = state.examLog || []).push({ sec, tg: qTarget(cur.id) });
           await saveAnswer(cur, sec);
+          renderStreak();
         }
       } finally { state.saving = false; }
       // これが最後の質問だった場合は、保存したあと、自動で記録ページへ移る
       if (state.settings.mode !== "pick" && !hasMore()) { finishSession(); return; }
       setPhase("answered");
+      if (sec !== null && cur) {
+        const tg = qTarget(cur.id);
+        if (tg > 0) {
+          const d = Math.round(sec - tg);
+          $("#status").textContent = sec <= tg ? `回答時間を記録しました(目標 ${fmtT(tg)} 以内 ✓)` : `回答時間を記録しました(目標より ${d}秒 オーバー)`;
+        }
+        $("#timer").classList.toggle("over", tg > 0 && sec > tg);
+      }
       if (state.settings.mode === "pick") { releaseMic(); openReview(); }   // 1問ずつ出題する時は、その場で聞き返す
       return;
     }
@@ -912,16 +1001,23 @@
   }
 
   /* ========== 質問一覧 ========== */
+  const metaChips = (q) => {
+    const tg = Number(meta[q.id]?.target) > 0 ? `<span class="tgt">目標 ${fmtT(Number(meta[q.id].target))}</span>` : "";
+    const tags = qTags(q).map((t) => `<span class="tag">${esc(t)}</span>`).join("");
+    return tg || tags ? `<small class="chips">${tg}${tags}</small>` : "";
+  };
   const rowHtml = (q) => `
     <li style="--d:${q.depth}">
-      <span class="t">${esc(q.title)}${q.parentLabel ? `<small class="sub">「${esc(q.parentLabel)}」の深掘り</small>` : ""}</span>
+      <span class="t">${esc(q.title)}${q.parentLabel ? `<small class="sub">「${esc(q.parentLabel)}」の深掘り</small>` : ""}${metaChips(q)}</span>
       ${q.imported ? '<span class="badge own">限定</span>' : ""}
+      <button class="meta" data-meta="${esc(q.id)}" aria-label="目標時間・タグを設定">⚙</button>
       <button class="scr" data-scr="${esc(q.id)}" aria-label="原稿を入力・編集">原稿${state.scripts.has(q.id) ? " ✓" : ""}</button>
       <button class="play" data-id="${esc(q.id)}" aria-label="この質問を出題">▶</button>
       ${q.owner_id ? `<button class="del" data-del="${esc(q.id)}">削除</button>` : ""}
     </li>`;
 
   function renderList() {
+    renderTagFilter();
     $("#list").innerHTML = flatten(null, 0, defaults()).map(rowHtml).join("");
     const mine = flattenMine();
     $("#myList").innerHTML = mine.length
@@ -1041,6 +1137,8 @@
   /* ========== 記録 ========== */
   function renderHistory() {
     $("#doneNote").hidden = !state.justFinished;
+    $("#doneNote").textContent = "すべての質問が終了しました。お疲れさまでした。今回の回答時間は、下の「最近の記録」に残っています。" + (state.justFinished && state.examSummary ? "\n" + state.examSummary : "");
+    renderStreak(); renderCharts();
     $("#historySource").textContent = state.user
       ? "保存先: アカウント(どの端末からでも見られます)"
       : "保存先: この端末のみ(ログインすると、アカウントに保存できます)";
@@ -1052,16 +1150,17 @@
     }
     const agg = new Map();
     h.forEach((r) => {
-      const a = agg.get(r.question_id) || { title: r.title, n: 0, sum: 0 };
+      const a = agg.get(r.question_id) || { title: r.title, n: 0, sum: 0, tg: qTarget(r.question_id) };
       a.n++; a.sum += r.seconds;
       agg.set(r.question_id, a);
     });
     $("#stats").innerHTML = [...agg.values()].map((a) =>
-      `<li><span class="t">${esc(a.title)}</span><span class="num">平均 ${fmt(a.sum / a.n)}(${a.n}回)</span></li>`).join("");
+      `<li><span class="t">${esc(a.title)}</span><span class="num${a.tg > 0 && a.sum / a.n > a.tg ? " over" : ""}">平均 ${fmt(a.sum / a.n)}(${a.n}回)${a.tg > 0 ? `<small>目標 ${fmtT(a.tg)}</small>` : ""}</span></li>`).join("");
     $("#recent").innerHTML = h.slice(-30).reverse().map((r) => {
       const d = new Date(r.created_at);
       const when = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-      return `<li><span class="t">${esc(r.title)}</span><span class="num">${fmt(r.seconds)}<small>${when}</small></span></li>`;
+      const tg = qTarget(r.question_id);
+      return `<li><span class="t">${esc(r.title)}</span><span class="num${tg > 0 && r.seconds > tg ? " over" : tg > 0 ? " ok" : ""}">${fmt(r.seconds)}<small>${when}</small></span></li>`;
     }).join("");
   }
 
@@ -1576,6 +1675,7 @@
   const TUTORIAL = [
     { tab: "practice", title: "ようこそ", body: "「セルフ面接練習」は、面接の質問を音声で聞き、声に出して答える練習ができるアプリです。ここから、使い方を1分ほどで説明します。" },
     { tab: "practice", title: "練習する", body: "「練習」画面で出題モード(ランダム・順番・選んで出題)を選び、スタートを押すと、質問が音声で流れます。質問を聞いたら、声に出して答えてください。ランダムでは、深掘りの質問も出ます。" },
+    { tab: "practice", title: "目標時間・苦手・本番モード", body: "質問ごとに目標時間を決めると、超えたときにタイマーが色づきます(質問一覧の ⚙ から設定)。「苦手な質問を多めに出す」をオンにすると、時間が長い質問や、照合の一致率が低い質問を、もう一度出します。出題モードの「本番モード」は、質問文を隠し、聞き返しなしで、制限時間つきで練習します。" },
     { tab: "list", title: "質問一覧と原稿", body: "「質問一覧」では、自分の質問を追加できます。各質問の「原稿」ボタンから、暗記したい回答の文章を登録できます。原稿はあなたのアカウントにだけ保存されます。" },
     { tab: "account", title: "回答を録音して聞き返す", body: "「設定」で録音をオンにすると、回答が録音され、終了後にまとめて聞き返せます。録音はこの端末のメモリにだけ置かれ、聞き返し画面を閉じると削除されます。" },
     { tab: "account", title: "AIで暗記を確認(ベータ版)", body: "原稿を登録した質問は、聞き返し画面で「原稿と照合する」を押すと、AIが録音を文字にして、原稿と比べます。音声は端末の外へ送られません。AIは完全ではなく、聞き間違いもあるため、結果は目安です。スマホでは、base の利用をおすすめします。" },
@@ -1808,6 +1908,149 @@
     };
   }
 
+  /* ========== 目標時間・タグの設定 ========== */
+  function openMeta(qid) {
+    const q = getQuestions().find((x) => x.id === qid); if (!q || !$("#metaDlg")) return;
+    state.metaFor = qid;
+    $("#metaTitle").textContent = q.title;
+    $("#metaTarget").value = Number(meta[qid]?.target) > 0 ? meta[qid].target : "";
+    $("#metaTarget").placeholder = state.settings.defaultTarget > 0 ? `指定なし(既定の ${state.settings.defaultTarget} 秒)` : "指定なし";
+    $("#metaTags").value = (meta[qid]?.tags || []).join("、");
+    $("#metaTagList").innerHTML = allTags().map((t) => `<option value="${esc(t)}">`).join("");
+    $("#metaMsg").textContent = "";
+    $("#metaDlg").hidden = false;
+    $("#metaTarget").focus();
+  }
+  function bindMetaUI() {
+    if (!$("#metaDlg")) return;
+    $("#metaClose").onclick = () => { $("#metaDlg").hidden = true; state.metaFor = null; };
+    $("#metaSave").onclick = () => {
+      const qid = state.metaFor; if (!qid) return;
+      const raw = $("#metaTarget").value.trim();
+      const t = raw === "" ? 0 : Math.round(Number(raw));
+      if (!(t >= 0 && t <= 600)) { $("#metaMsg").textContent = "目標時間は、0〜600秒で入力してください。(空欄=指定なし)"; return; }
+      const tags = [...new Set($("#metaTags").value.split(/[,、，\s]+/).map((s) => s.trim().slice(0, 12)).filter(Boolean))].slice(0, 5);
+      const m = {}; if (t > 0) m.target = t; if (tags.length) m.tags = tags;
+      if (Object.keys(m).length) meta[qid] = m; else delete meta[qid];
+      saveJSON(LS_META, meta);
+      $("#metaDlg").hidden = true; state.metaFor = null;
+      renderList(); renderTagFilter(); renderHistory();
+      notify("目標時間・タグを保存しました");
+    };
+  }
+  // 出題するタグの選択欄(タグが1つも無ければ、出さない)
+  function renderTagFilter() {
+    const sel = $("#tagFilter"); if (!sel) return;
+    const tags = allTags();
+    if (state.settings.tagFilter && !tags.includes(state.settings.tagFilter)) state.settings.tagFilter = "";
+    sel.innerHTML = `<option value="">すべて</option>` + tags.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+    sel.value = state.settings.tagFilter;
+    sel.closest("label").hidden = tags.length === 0;
+  }
+
+  /* ========== 連続日数・成長グラフ・リマインド ========== */
+  function streakInfo() {
+    const days = new Set(state.history.map((r) => dayKey(r.created_at)));
+    const d = new Date(); let n = 0;
+    if (!days.has(dayKey(d))) d.setDate(d.getDate() - 1);     // 今日まだ練習していなくても、昨日まで続いていれば途切れない
+    while (days.has(dayKey(d))) { n++; d.setDate(d.getDate() - 1); }
+    return { streak: n, total: days.size, today: days.has(dayKey(new Date())) };
+  }
+  function renderStreak() {
+    const { streak, total, today } = streakInfo();
+    const html = streak > 0
+      ? `<strong>🔥 ${streak}日連続</strong><span>${today ? "今日の練習は完了" : "今日はまだです。続きを記録しましょう"}(練習した日 通算 ${total}日)</span>`
+      : `<strong>練習を始めましょう</strong><span>練習した日が連続すると、ここに日数が表示されます</span>`;
+    ["#streakBar", "#streakBar2"].forEach((s) => { if ($(s)) $(s).innerHTML = html; });
+    renderRemind();
+  }
+  function renderRemind() {
+    const bar = $("#remindBar"); if (!bar) return;
+    const t = state.settings.remindTime; let show = false;
+    if (t && state.user) {
+      const now = new Date(), [h, m] = t.split(":").map(Number);
+      let off = ""; try { off = localStorage.getItem("si_remind_off") || ""; } catch (_) {}
+      show = now.getHours() * 60 + now.getMinutes() >= h * 60 + m && !streakInfo().today && off !== dayKey(now);
+    }
+    bar.hidden = !show;
+  }
+  function buildIcs(time) {
+    const [h, m] = time.split(":").map(Number), n = new Date();
+    n.setHours(h, m, 0, 0); if (n < new Date()) n.setDate(n.getDate() + 1);
+    const p2 = (x) => String(x).padStart(2, "0");
+    const loc = (d) => `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}T${p2(d.getHours())}${p2(d.getMinutes())}00`;
+    const url = /^https?:/.test(location.href) ? location.href.split("#")[0] : "";
+    return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//self-interview//JP", "CALSCALE:GREGORIAN", "BEGIN:VEVENT",
+      `UID:self-interview-reminder-${time.replace(":", "")}@self-interview`, `DTSTAMP:${new Date().toISOString().replace(/[-:]|\.\d+/g, "")}`,
+      `DTSTART:${loc(n)}`, "DURATION:PT15M", "RRULE:FREQ=DAILY", "SUMMARY:セルフ面接練習", "DESCRIPTION:今日の面接練習をしましょう。" + (url ? " " + url : ""),
+      ...(url ? [`URL:${url}`] : []), "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:セルフ面接練習の時間です", "TRIGGER:PT0M", "END:VALARM", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+  }
+
+  const SVG_NS = (w, h, inner, label) => `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(label)}" class="chart">${inner}</svg>`;
+  function lastDays(n) { const out = []; for (let i = n - 1; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); out.push(d); } return out; }
+  function chartBars(vals, labels, title) {
+    const W = 320, H = 130, L = 26, B = 20, T = 8, max = Math.max(1, ...vals), bw = (W - L - 6) / vals.length;
+    let s = `<line x1="${L}" y1="${H - B}" x2="${W}" y2="${H - B}" class="ax"/><text x="${L - 4}" y="${T + 8}" class="tx" text-anchor="end">${max}</text><text x="${L - 4}" y="${H - B}" class="tx" text-anchor="end">0</text>`;
+    vals.forEach((v, i) => { const h = (v / max) * (H - B - T - 4); s += `<rect x="${(L + i * bw + 2).toFixed(1)}" y="${(H - B - h).toFixed(1)}" width="${(bw - 4).toFixed(1)}" height="${h.toFixed(1)}" rx="2" class="bar"/>`; });
+    [0, Math.floor(vals.length / 2), vals.length - 1].forEach((i) => { s += `<text x="${(L + i * bw + bw / 2).toFixed(1)}" y="${H - 5}" class="tx" text-anchor="middle">${labels[i]}</text>`; });
+    return SVG_NS(W, H, s, title);
+  }
+  function chartLine(pts, n, labels, title, opt = {}) {   // pts: [{i, v}]
+    const W = 320, H = 130, L = 30, B = 20, T = 8, vmax = opt.max || Math.max(opt.ref || 0, ...pts.map((p) => p.v), 1) * 1.1, vmin = opt.min ?? 0;
+    const X = (i) => L + (n <= 1 ? 0 : (i / (n - 1)) * (W - L - 18)), Y = (v) => T + (1 - (v - vmin) / (vmax - vmin)) * (H - B - T);
+    let s = `<line x1="${L}" y1="${H - B}" x2="${W}" y2="${H - B}" class="ax"/><text x="${L - 4}" y="${T + 8}" class="tx" text-anchor="end">${opt.fmt ? opt.fmt(vmax) : Math.round(vmax)}</text><text x="${L - 4}" y="${H - B}" class="tx" text-anchor="end">${opt.fmt ? opt.fmt(vmin) : vmin}</text>`;
+    if (opt.ref) s += `<line x1="${L}" y1="${Y(opt.ref).toFixed(1)}" x2="${W - 10}" y2="${Y(opt.ref).toFixed(1)}" class="ref"/><text x="${L + 3}" y="${(Y(opt.ref) - 3).toFixed(1)}" class="tx">目標</text>`;
+    if (pts.length > 1) s += `<polyline points="${pts.map((p) => `${X(p.i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ")}" class="ln"/>`;
+    pts.forEach((p) => { s += `<circle cx="${X(p.i).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="3" class="dot"/>`; });
+    [0, Math.floor((n - 1) / 2), n - 1].forEach((i) => { s += `<text x="${X(i).toFixed(1)}" y="${H - 5}" class="tx" text-anchor="middle">${labels[i]}</text>`; });
+    return SVG_NS(W, H, s, title);
+  }
+  function renderCharts() {
+    const box = $("#charts"); if (!box) return;
+    const h = state.history;
+    if (!h.length) { box.innerHTML = `<p class="empty">練習すると、ここにグラフが表示されます。</p>`; return; }
+    const days = lastDays(14), keys = days.map(dayKey), labels = days.map((d) => `${d.getMonth() + 1}/${d.getDate()}`);
+    const cnt = keys.map(() => 0), sum = keys.map(() => 0);
+    h.forEach((r) => { const i = keys.indexOf(dayKey(r.created_at)); if (i >= 0) { cnt[i]++; sum[i] += r.seconds; } });
+    const pts = keys.map((_, i) => (cnt[i] ? { i, v: sum[i] / cnt[i] } : null)).filter(Boolean);
+    let html = `<h3>練習した回数(直近14日)</h3>${chartBars(cnt, labels, "練習した回数")}`;
+    html += `<h3>回答時間の平均(秒・直近14日)</h3>${pts.length ? chartLine(pts, 14, labels, "回答時間の平均", { ref: Number(state.settings.defaultTarget) || 0 }) : `<p class="empty">この期間の記録がありません。</p>`}`;
+    const all = Object.values(checks).flat().sort((a, b) => a.t - b.t).slice(-20);
+    if (all.length) {
+      const lb = all.map((c) => { const d = new Date(c.t); return `${d.getMonth() + 1}/${d.getDate()}`; });
+      html += `<h3>AI照合の一致率(%・直近${all.length}回・ベータ版)</h3>${chartLine(all.map((c, i) => ({ i, v: c.pct })), all.length, lb, "AI照合の一致率", { min: 0, max: 100 })}`;
+    }
+    box.innerHTML = html;
+  }
+
+  // 目標時間・速度・苦手・タグ・リマインドの設定
+  function bindExtraSettings() {
+    const save = () => saveJSON(LS_SETTINGS, state.settings);
+    const reset = () => { stopAudio(); resetTimer(); clearAnswerData(); state.current = null; setPhase("idle"); };
+    const modeHint = () => { if ($("#modeHint")) $("#modeHint").hidden = !isExam(); };
+    modeHint();
+    $("#mode").addEventListener("change", modeHint);
+    if ($("#speed")) { $("#speed").value = String(speedOf()); $("#speed").onchange = (e) => { state.settings.speed = Number(e.target.value); save(); try { audio.playbackRate = speedOf(); } catch (_) {} }; }
+    if ($("#defaultTarget")) {
+      $("#defaultTarget").value = state.settings.defaultTarget || "";
+      $("#defaultTarget").onchange = (e) => { const v = Math.round(Number(e.target.value)); state.settings.defaultTarget = v > 0 && v <= 600 ? v : 0; e.target.value = state.settings.defaultTarget || ""; save(); renderList(); renderHistory(); };
+    }
+    if ($("#weakFocus")) { $("#weakFocus").checked = !!state.settings.weakFocus; $("#weakFocus").onchange = (e) => { state.settings.weakFocus = e.target.checked; save(); }; }
+    if ($("#tagFilter")) $("#tagFilter").onchange = (e) => { state.settings.tagFilter = e.target.value; save(); reset(); };
+    if ($("#remindTime")) { $("#remindTime").value = state.settings.remindTime || ""; $("#remindTime").onchange = (e) => { state.settings.remindTime = e.target.value; save(); renderRemind(); }; }
+    if ($("#icsBtn")) $("#icsBtn").onclick = () => {
+      const t = state.settings.remindTime;
+      if (!t) { $("#remindMsg").textContent = "先に、リマインドの時刻を選んでください。"; return; }
+      const url = URL.createObjectURL(new Blob([buildIcs(t)], { type: "text/calendar;charset=utf-8" }));
+      const a = document.createElement("a"); a.href = url; a.download = "self-interview.ics"; document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      $("#remindMsg").textContent = "カレンダーに追加すると、毎日その時刻に、端末が通知します。";
+    };
+    if ($("#remindClose")) $("#remindClose").onclick = () => { try { localStorage.setItem("si_remind_off", dayKey(new Date())); } catch (_) {} renderRemind(); };
+    setInterval(renderRemind, 60000);
+    renderTagFilter(); renderStreak();
+  }
+
   /* ========== 初期化 ========== */
   function init() {
     $("#mode").value = state.settings.mode;
@@ -1848,6 +2091,8 @@
     }
     bindScriptUI();
     bindTutorialUI();
+    bindMetaUI();
+    bindExtraSettings();
     if ($("#review")) bindReviewUI();
     $("#showTitle").onchange = (e) => { state.settings.showTitle = e.target.checked; saveJSON(LS_SETTINGS, state.settings); setPhase(state.phase); };
 
@@ -1864,6 +2109,8 @@
       if (del) { deleteQuestion(del.dataset.del); return; }
       const scr = e.target.closest("button.scr");
       if (scr) { openScript(scr.dataset.scr); return; }
+      const mt = e.target.closest("button.meta");
+      if (mt) { openMeta(mt.dataset.meta); return; }
       const btn = e.target.closest("button.play");
       if (!btn) return;
       const q = getQuestions().find((x) => x.id === btn.dataset.id);
