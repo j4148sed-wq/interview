@@ -30,6 +30,9 @@
     <!-- 招待コードが届いた時のお知らせ -->
     <div id="inviteNotice" class="invite-notice" role="status" aria-live="polite" hidden></div>
 
+    <!-- 運営からのお知らせ(未読) -->
+    <div id="annBox" class="ann-box" role="status" aria-live="polite" hidden></div>
+
     <!-- 練習 -->
     <section id="view-practice" class="view">
       <div id="remindBar" class="remind-bar" role="status" hidden>
@@ -228,6 +231,8 @@
             <button id="tutReopen" class="ghost" type="button">使い方を見る</button>
             <button id="logoutBtn" class="ghost">ログアウト</button>
           </div>
+          <h2 style="margin-top:16px">運営からのお知らせ</h2>
+          <div id="annList" class="ann-list"></div>
           <p class="hint" style="margin-top:12px"><a href="terms.html" target="_blank" rel="noopener">利用規約を読む</a></p>
         </div>
 
@@ -283,6 +288,27 @@
       </div>
       <p id="adminMsg" class="notice" role="status" aria-live="polite"></p>
       <ul id="adminList" class="adminlist"></ul>
+
+      <div class="card" id="annCard">
+        <h2>お知らせ・メンテナンス</h2>
+        <p class="hint">メンテナンス中は、責任者以外が利用できなくなります(ログイン前の画面にも表示されます)。</p>
+        <p id="maintState" class="hint"></p>
+        <label class="check"><input type="checkbox" id="maintOn"> メンテナンス中にする</label>
+        <label class="fieldlabel">ユーザーに見せるメッセージ
+          <textarea id="maintText" rows="3" maxlength="1000" placeholder="例: 11/20 2:00〜4:00 はメンテナンスのため、ご利用いただけません。"></textarea>
+        </label>
+        <button type="button" id="maintSave" class="ghost">メンテナンスの設定を保存</button>
+        <hr>
+        <h2>お知らせを投稿する</h2>
+        <div class="fields">
+          <input id="annTitle" type="text" maxlength="100" placeholder="タイトル">
+          <textarea id="annBody" rows="4" maxlength="2000" placeholder="本文(任意)"></textarea>
+          <select id="annLevel"><option value="info">通常のお知らせ</option><option value="warn">重要(⚠ 付き)</option></select>
+          <button type="button" id="annPost" class="primary">公開する</button>
+        </div>
+        <p id="annAdminMsg" class="notice" role="status" aria-live="polite"></p>
+        <ul id="adminAnnList" class="qlist"></ul>
+      </div>
 
       <div class="card" id="packCard">
         <h2>質問セットと招待コード</h2>
@@ -356,6 +382,17 @@
       </div>
     </section>
   </main>
+
+    <!-- メンテナンス中の表示(責任者以外は、ここから先に進めない) -->
+  <div id="maintOverlay" class="maint" role="alertdialog" aria-modal="true" aria-labelledby="maintHead" hidden>
+    <div class="maint-box">
+      <h2 id="maintHead">🛠 メンテナンス中</h2>
+      <p id="maintMsg"></p>
+      <button id="maintReload" class="primary" type="button">もう一度確認する</button>
+      <button id="maintAdmin" class="ghost" type="button">運営者の方はこちら(ログイン)</button>
+      <button id="maintLogout" class="ghost" type="button" hidden>ログアウト</button>
+    </div>
+  </div>
 
     <!-- 質問ごとの目標時間・タグ -->
   <div id="metaDlg" class="review" role="dialog" aria-modal="true" aria-labelledby="metaHead" hidden>

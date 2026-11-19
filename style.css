@@ -311,3 +311,20 @@ details.more summary { cursor: pointer; font-size: .9rem; }
 button.meta { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color: var(--ink); cursor: pointer; }
 .meta-f { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); }
 #doneNote { white-space: pre-line; }
+
+/* お知らせ・メンテナンス */
+.ann-box { display: grid; gap: 8px; margin-bottom: 10px; }
+.ann-box[hidden] { display: none; }
+.ann { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 12px; background: var(--surface); }
+.ann.warn { border-left-color: #f9a825; background: color-mix(in srgb, #f9a825 14%, var(--surface)); }
+.ann-body { white-space: pre-wrap; font-size: .9rem; line-height: 1.6; }
+.ann small { color: var(--muted); }
+.ann .ann-read { width: auto; justify-self: end; padding: 6px 12px; }
+.ann-list { display: grid; gap: 8px; }
+.tab.dot { position: relative; }
+.tab.dot::after { content: ""; position: absolute; top: 6px; right: 14%; width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
+.maint { position: fixed; inset: 0; z-index: 3000; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 16px; overflow-y: auto; }
+.maint[hidden] { display: none; }
+.maint-box { width: 100%; max-width: 420px; display: grid; gap: 12px; text-align: center; }
+.maint-box h2 { margin: 0; }
+.maint-box p { margin: 0; line-height: 1.8; white-space: pre-wrap; }

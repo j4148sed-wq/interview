@@ -1280,11 +1280,12 @@
 
   // 責任者かどうかを確認する(責任者でなければ「責任者」タブは出ない)
   async function refreshAdmin() {
-    state.isAdmin = false;
+    state.isAdmin = false; state.adminChecked = false;
     if (state.user && sb) {
       const { data, error } = await sb.rpc("is_admin");
       state.isAdmin = !error && data === true;
     }
+    state.adminChecked = true;
     renderAccount();
   }
 
@@ -1298,6 +1299,7 @@
     renderAdmin();
     await loadTargets();
     await loadPacks();
+    renderMaintAdmin(); renderAnnAdmin();
   }
 
   /* ----- 質問セット・音声ファイル・招待コードの管理(責任者) ----- */
@@ -1669,6 +1671,7 @@
       switchTab("practice");
     }
     if (!locked) maybeTutorial();
+    applyMaintenance();
   }
 
   /* ========== 初回ログイン時の使い方ガイド ========== */
@@ -1738,6 +1741,7 @@
     await loadScripts();
     await Promise.all([refreshAdmin(), loadRedemptions()]);
     await loadNotices();
+    await loadAnnouncements();
     if (state.user && sb) {
       const { data, error } = await sb.from("answers")
         .select("question_id,title,seconds,created_at")
@@ -1755,6 +1759,7 @@
   async function initAuth() {
     renderAccount();
     if (!sb) return;
+    loadStatus(); startStatusPolling();
     try {
       const { data } = await sb.auth.getSession();
       state.user = data.session?.user ?? null;
@@ -2023,6 +2028,135 @@
     box.innerHTML = html;
   }
 
+  /* ========== 運営からのお知らせ / メンテナンス中の利用制限 ========== */
+  const LS_ANN_SEEN = "si_ann_seen";
+  const annSeen = () => { try { return new Set(JSON.parse(localStorage.getItem(LS_ANN_SEEN) || "[]")); } catch (_) { return new Set(); } };
+  const fmtDay = (s) => { const d = new Date(s); return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`; };
+
+  async function loadStatus() {
+    if (!sb) return;
+    try {
+      const { data, error } = await sb.from("app_status").select("maintenance,message").eq("id", 1);
+      if (error) { console.warn(error); return; }      // 表が無い(step10 未実行)場合は、制限しない
+      const r = data && data[0];
+      state.maint = { on: !!r?.maintenance, message: r?.message || "" };
+    } catch (e) { console.warn(e); return; }
+    applyMaintenance();
+    renderMaintAdmin();
+  }
+
+  // メンテナンス中は、責任者以外が使えないようにする(責任者のログイン画面だけは開ける)
+  function applyMaintenance() {
+    const ov = $("#maintOverlay"); if (!ov) return;
+    const m = state.maint || { on: false };
+    const blocked = m.on && !(state.user && state.adminChecked && state.isAdmin) && !(state.maintLogin && !state.user);
+    const was = !ov.hidden;
+    ov.hidden = !blocked;
+    document.body.classList.toggle("in-maint", blocked);
+    if (blocked) {
+      $("#maintMsg").textContent = m.message || "ただいまメンテナンス中です。しばらくしてから、もう一度お試しください。";
+      $("#maintLogout").hidden = !state.user;
+      $("#maintAdmin").hidden = !!state.user;
+      if (!was) { stopAudio(); resetTimer(); discardAnswerRec(); if (state.phase === "playing" || state.phase === "answering") { state.current = null; setPhase("idle"); } }
+    }
+    renderAnn();
+  }
+
+  async function loadAnnouncements() {
+    if (!(sb && state.user && hasAgreed(state.user))) { state.anns = []; renderAnn(); return; }
+    try {
+      const { data, error } = await sb.from("announcements")
+        .select("id,title,body,level,published,created_at").order("created_at", { ascending: false }).limit(50);
+      if (error) { console.warn(error); return; }
+      state.anns = data || [];
+    } catch (e) { console.warn(e); return; }
+    renderAnn(); renderAnnAdmin();
+  }
+
+  function annCard(x, withBtn) {
+    return `<div class="ann ${x.level === "warn" ? "warn" : ""}" data-ann="${esc(x.id)}">
+      <strong>${x.level === "warn" ? "⚠ " : ""}${esc(x.title)}</strong>
+      <span class="ann-body">${esc(x.body)}</span>
+      <small>${fmtDay(x.created_at)}</small>
+      ${withBtn ? `<button class="ghost ann-read" type="button" data-read="${esc(x.id)}">既読にする</button>` : ""}
+    </div>`;
+  }
+  function renderAnn() {
+    const seen = annSeen(), list = (state.anns || []).filter((x) => x.published);
+    const unread = list.filter((x) => !seen.has(x.id));
+    const m = state.maint || { on: false };
+    const adminNote = m.on && state.isAdmin ? `<div class="ann warn"><strong>⚠ メンテナンス中です</strong><span class="ann-body">責任者のため、利用できます。一般のユーザーは、利用できません。</span></div>` : "";
+    if ($("#annBox")) { $("#annBox").innerHTML = adminNote + unread.slice(0, 3).map((x) => annCard(x, true)).join(""); $("#annBox").hidden = !(adminNote || unread.length); }
+    if ($("#annList")) {
+      $("#annList").innerHTML = list.length
+        ? list.slice(0, 20).map((x) => annCard(x, false).replace("<strong>", `<strong>${seen.has(x.id) ? "" : '<span class="badge own">新着</span> '}`)).join("")
+        : `<p class="empty">お知らせはありません。</p>`;
+    }
+    const tab = document.querySelector('.tab[data-tab="account"]'); if (tab) tab.classList.toggle("dot", unread.length > 0);
+  }
+  function markAnnRead(id) {
+    const s = annSeen(); s.add(id);
+    try { localStorage.setItem(LS_ANN_SEEN, JSON.stringify([...s].slice(-200))); } catch (_) {}
+    renderAnn();
+  }
+
+  // 責任者: メンテナンスの切り替えと、お知らせの投稿・公開・削除
+  function renderMaintAdmin() {
+    if (!$("#maintOn") || document.activeElement === $("#maintText")) return;
+    $("#maintOn").checked = !!state.maint?.on;
+    $("#maintText").value = state.maint?.message || "";
+    $("#maintState").textContent = state.maint?.on ? "現在: メンテナンス中(一般のユーザーは利用できません)" : "現在: 通常どおり利用できます";
+  }
+  function renderAnnAdmin() {
+    const ul = $("#adminAnnList"); if (!ul) return;
+    ul.innerHTML = (state.anns || []).length
+      ? state.anns.map((x) => `<li data-ann="${esc(x.id)}"><span class="t">${x.level === "warn" ? "⚠ " : ""}${esc(x.title)}<small class="sub">${fmtDay(x.created_at)} / ${x.published ? "公開中" : "非公開"}</small></span>
+          <button class="ghost" type="button" data-annpub="${esc(x.id)}" data-to="${x.published ? 0 : 1}">${x.published ? "非公開にする" : "公開する"}</button>
+          <button class="del" type="button" data-anndel="${esc(x.id)}">削除</button></li>`).join("")
+      : `<li class="empty">まだありません。</li>`;
+  }
+  function bindAnnouncementUI() {
+    document.addEventListener("click", (e) => { const b = e.target.closest("button.ann-read"); if (b) markAnnRead(b.dataset.read); });
+    if ($("#maintAdmin")) $("#maintAdmin").onclick = () => { state.maintLogin = true; applyMaintenance(); switchTab("account"); };
+    if ($("#maintReload")) $("#maintReload").onclick = async () => { await loadStatus(); if (!$("#maintOverlay").hidden) notify("まだメンテナンス中です"); };
+    if ($("#maintLogout")) $("#maintLogout").onclick = async () => { try { await sb.auth.signOut(); } catch (_) {} };
+    if (!$("#maintSave")) return;
+    const msg = (t) => { $("#annAdminMsg").textContent = t; };
+    $("#maintSave").onclick = async () => {
+      const on = $("#maintOn").checked;
+      if (on && !confirm("メンテナンスを開始します。責任者以外は、利用できなくなります。よろしいですか?")) return;
+      const { error } = await sb.rpc("admin_set_maintenance", { p_on: on, p_message: $("#maintText").value.trim() });
+      if (error) { console.warn(error); msg("保存に失敗しました。(Supabaseで step10 のSQLを実行済みか確認してください)"); return; }
+      msg(on ? "メンテナンスを開始しました。" : "メンテナンスを終了しました。");
+      await loadStatus();
+    };
+    $("#annPost").onclick = async () => {
+      const title = $("#annTitle").value.trim(); if (!title) { msg("タイトルを入力してください。"); return; }
+      const { error } = await sb.rpc("admin_save_announcement", { p_title: title, p_body: $("#annBody").value, p_level: $("#annLevel").value });
+      if (error) { console.warn(error); msg("投稿に失敗しました。(Supabaseで step10 のSQLを実行済みか確認してください)"); return; }
+      $("#annTitle").value = ""; $("#annBody").value = ""; msg("お知らせを公開しました。");
+      await loadAnnouncements();
+    };
+    $("#adminAnnList").onclick = async (e) => {
+      const pub = e.target.closest("[data-annpub]"), del = e.target.closest("[data-anndel]");
+      if (pub) {
+        const { error } = await sb.rpc("admin_set_announcement_published", { p_id: pub.dataset.annpub, p_published: pub.dataset.to === "1" });
+        if (error) { console.warn(error); msg("操作に失敗しました。"); return; }
+        await loadAnnouncements();
+      } else if (del) {
+        if (!confirm("このお知らせを削除します。よろしいですか?")) return;
+        const { error } = await sb.rpc("admin_delete_announcement", { p_id: del.dataset.anndel });
+        if (error) { console.warn(error); msg("削除に失敗しました。"); return; }
+        await loadAnnouncements();
+      }
+    };
+  }
+  function startStatusPolling() {
+    const tick = () => { if (document.visibilityState === "visible") { loadStatus(); if (state.user) loadAnnouncements(); } };
+    setInterval(tick, 60000);
+    document.addEventListener("visibilitychange", tick);
+  }
+
   // 目標時間・速度・苦手・タグ・リマインドの設定
   function bindExtraSettings() {
     const save = () => saveJSON(LS_SETTINGS, state.settings);
@@ -2093,6 +2227,7 @@
     bindTutorialUI();
     bindMetaUI();
     bindExtraSettings();
+    bindAnnouncementUI();
     if ($("#review")) bindReviewUI();
     $("#showTitle").onchange = (e) => { state.settings.showTitle = e.target.checked; saveJSON(LS_SETTINGS, state.settings); setPhase(state.phase); };
 
