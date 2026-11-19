@@ -394,6 +394,35 @@
     </div>
   </div>
 
+    <!-- 自分の質問の編集 -->
+  <div id="editDlg" class="review" role="dialog" aria-modal="true" aria-labelledby="editHead" hidden>
+    <div class="review-box script-box">
+      <h2 id="editHead">質問を編集</h2>
+      <label class="meta-f">質問文
+        <input id="editTitle" type="text" maxlength="100">
+      </label>
+      <label class="meta-f">親の質問(選ぶと、その深掘り質問として出題されます)
+        <select id="editParent"></select>
+      </label>
+      <div class="meta-f">
+        <span>音声を差し替える(変えない場合は、そのままにしてください)</span>
+        <input id="editFile" type="file" accept="audio/*,.mp3,.m4a">
+        <button type="button" id="editRecStart" class="ghost">● 録音で差し替える</button>
+        <div id="editRecStop" class="rec-row" hidden>
+          <button type="button" class="primary rec-on">■ 録音を止める</button>
+          <span id="editRecTime" class="rec-time">0:00.0</span>
+        </div>
+        <div id="editRecDone" hidden>
+          <audio id="editPreview" controls></audio>
+          <button type="button" id="editRecRedo" class="ghost">録り直す</button>
+        </div>
+      </div>
+      <p id="editMsg" class="notice" role="status" aria-live="polite"></p>
+      <button id="editSave" class="primary" type="button">保存</button>
+      <button id="editClose" class="ghost" type="button">閉じる</button>
+    </div>
+  </div>
+
     <!-- 質問ごとの目標時間・タグ -->
   <div id="metaDlg" class="review" role="dialog" aria-modal="true" aria-labelledby="metaHead" hidden>
     <div class="review-box script-box">

@@ -328,3 +328,4 @@ button.meta { background: transparent; border: 1px solid var(--line); border-rad
 .maint-box { width: 100%; max-width: 420px; display: grid; gap: 12px; text-align: center; }
 .maint-box h2 { margin: 0; }
 .maint-box p { margin: 0; line-height: 1.8; white-space: pre-wrap; }
+button.edit { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color: var(--ink); cursor: pointer; font-size: .85rem; }

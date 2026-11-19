@@ -1013,6 +1013,7 @@
       <button class="meta" data-meta="${esc(q.id)}" aria-label="目標時間・タグを設定">⚙</button>
       <button class="scr" data-scr="${esc(q.id)}" aria-label="原稿を入力・編集">原稿${state.scripts.has(q.id) ? " ✓" : ""}</button>
       <button class="play" data-id="${esc(q.id)}" aria-label="この質問を出題">▶</button>
+      ${q.owner_id && !q.imported ? `<button class="edit" data-edit="${esc(q.id)}" aria-label="この質問を編集">編集</button>` : ""}
       ${q.owner_id ? `<button class="del" data-del="${esc(q.id)}">削除</button>` : ""}
     </li>`;
 
@@ -1126,6 +1127,8 @@
     if (error) { listMsg(`削除に失敗しました: ${error.message}`); return; }
     sb.from("question_scripts").delete().in("question_id", ids).then(() => {}, () => {});   // 原稿も消す(失敗しても続行)
     ids.forEach((x) => state.scripts.delete(x));
+    const hadMeta = ids.filter((x) => meta[x]);
+    if (hadMeta.length) { hadMeta.forEach((x) => delete meta[x]); saveJSON(LS_META, meta); sb.from("question_meta").delete().in("question_id", hadMeta).then(() => {}, () => {}); }
     if (paths.length) {   // 招待コード由来の質問は、共有の音声なので Storage からは消さない
       const rm = await sb.storage.from(BUCKET).remove(paths);
       if (rm.error) console.warn(rm.error);
@@ -1739,6 +1742,7 @@
     await syncPacks();
     await refreshQuestions();
     await loadScripts();
+    await loadMeta();
     await Promise.all([refreshAdmin(), loadRedemptions()]);
     await loadNotices();
     await loadAnnouncements();
@@ -1913,6 +1917,138 @@
     };
   }
 
+  /* ========== 自分の質問の編集(質問文・親の質問・音声の差し替え) ========== */
+  const edit = { id: null, rec: null, stream: null, chunks: [], blob: null, tick: null, url: null };
+  const EDIT_ERR = { not_found: "質問が見つかりません。", not_editable: "招待コードの質問は、編集できません。", bad_title: "質問文は1〜200文字で入力してください。", bad_parent: "その質問は、親にできません(自分自身か、自分の深掘り質問です)。", bad_audio: "音声ファイルの保存先が正しくありません。", maintenance: "ただいまメンテナンス中です。" };
+  const editMsg = (t) => { $("#editMsg").textContent = t; };
+  function editRecReset() {
+    clearInterval(edit.tick); edit.blob = null;
+    try { if (edit.rec && edit.rec.state !== "inactive") { edit.rec.onstop = null; edit.rec.stop(); } } catch (_) {}
+    if (edit.stream) { edit.stream.getTracks().forEach((t) => t.stop()); edit.stream = null; }
+    if (edit.url) { URL.revokeObjectURL(edit.url); edit.url = null; }
+    edit.rec = null; edit.chunks = [];
+    if ($("#editRecStart")) { $("#editRecStart").hidden = false; $("#editRecStop").hidden = true; $("#editRecDone").hidden = true; }
+  }
+  function openEdit(id) {
+    const q = state.userQuestions.find((x) => x.id === id);
+    if (!q || q.imported || !$("#editDlg")) return;
+    edit.id = id; editRecReset(); editMsg("");
+    $("#editTitle").value = q.title;
+    const banned = new Set([id, ...descendantIds(id)]);
+    $("#editParent").innerHTML = `<option value="">(なし)独立した質問</option>` +
+      flatten().filter((x) => !banned.has(x.id)).map((x) => `<option value="${esc(x.id)}">${"　".repeat(x.depth)}${esc(x.title)}</option>`).join("");
+    $("#editParent").value = q.parent_id && [...$("#editParent").options].some((o) => o.value === q.parent_id) ? q.parent_id : "";
+    $("#editFile").value = "";
+    $("#editDlg").hidden = false; $("#editTitle").focus();
+  }
+  function closeEdit() { editRecReset(); edit.id = null; $("#editDlg").hidden = true; }
+  async function saveEdit() {
+    const q = state.userQuestions.find((x) => x.id === edit.id);
+    if (!q || !sb || !state.user) return;
+    const title = $("#editTitle").value.trim();
+    if (!title) return editMsg("質問文を入力してください。");
+    const file = edit.blob ? null : $("#editFile").files[0];
+    const source = edit.blob || file;
+    let path = null, ext, contentType;
+    if (source) {
+      if (edit.blob) {
+        contentType = edit.blob.type.split(";")[0] || "audio/webm";
+        ext = contentType.includes("mp4") ? "m4a" : contentType.includes("ogg") ? "ogg" : "webm";
+      } else {
+        ext = ((file.name.split(".").pop() || "mp3").toLowerCase().replace(/[^a-z0-9]/g, "")) || "mp3";
+        if (!(file.type.startsWith("audio/") || MIME_BY_EXT[ext])) return editMsg("音声ファイル(MP3など)を選んでください。");
+        contentType = file.type.startsWith("audio/") ? file.type : MIME_BY_EXT[ext];
+      }
+      if (source.size > MAX_FILE) return editMsg("ファイルが大きすぎます(10MBまで)。");
+    }
+    const btn = $("#editSave"); btn.disabled = true; editMsg("保存しています…");
+    try {
+      if (source) {
+        const uid = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+        path = `${state.user.id}/${uid}.${ext}`;
+        const up = await sb.storage.from(BUCKET).upload(path, source, { contentType, upsert: false });
+        if (up.error) { console.warn(up.error); path = null; return editMsg(`アップロードに失敗しました: ${up.error.message}`); }
+      }
+      const { data, error } = await sb.rpc("update_my_question", { p_id: q.id, p_title: title, p_parent: $("#editParent").value || null, p_audio_path: path });
+      if (error) {
+        console.warn(error);
+        if (path) await sb.storage.from(BUCKET).remove([path]);       // 失敗したら、アップロードしたファイルも消す
+        const key = Object.keys(EDIT_ERR).find((k) => (error.message || "").includes(k));
+        return editMsg(key ? EDIT_ERR[key] : "保存に失敗しました。(Supabaseで step11 のSQLを実行済みか確認してください)");
+      }
+      if (data) { const rm = await sb.storage.from(BUCKET).remove([data]); if (rm.error) console.warn(rm.error); }   // 差し替え前の音声を消す
+      closeEdit();
+      listMsg("質問を更新しました。");
+      await refreshQuestions();
+    } finally { btn.disabled = false; }
+  }
+  function bindEditUI() {
+    if (!$("#editDlg")) return;
+    $("#editClose").onclick = closeEdit;
+    $("#editSave").onclick = saveEdit;
+    $("#editFile").onchange = () => { if ($("#editFile").files[0]) editRecReset(); };
+    $("#editRecStart").onclick = async () => {
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return editMsg("この環境では録音できません。");
+      editRecReset(); $("#editFile").value = "";
+      try { edit.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { return editMsg("マイクを使えませんでした。ブラウザのマイク許可を確認してください。"); }
+      const mime = pickRecMime();
+      edit.rec = new MediaRecorder(edit.stream, mime ? { mimeType: mime } : undefined);
+      edit.chunks = [];
+      edit.rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) edit.chunks.push(ev.data); };
+      edit.rec.onstop = () => {
+        clearInterval(edit.tick);
+        edit.blob = new Blob(edit.chunks, { type: edit.rec.mimeType || mime || "audio/webm" });
+        if (edit.stream) edit.stream.getTracks().forEach((t) => t.stop()); edit.stream = null;
+        edit.url = URL.createObjectURL(edit.blob); $("#editPreview").src = edit.url;
+        $("#editRecStop").hidden = true; $("#editRecDone").hidden = false;
+      };
+      edit.rec.start();
+      $("#editRecStart").hidden = true; $("#editRecStop").hidden = false;
+      const t0 = Date.now();
+      edit.tick = setInterval(() => { const s = (Date.now() - t0) / 1000; $("#editRecTime").textContent = fmt(s); if (s >= REC_MAX_SEC) $("#editRecStop").click(); }, 100);
+    };
+    $("#editRecStop").onclick = () => { try { edit.rec.stop(); } catch (_) {} };
+    $("#editRecRedo").onclick = editRecReset;
+  }
+
+  /* ========== 目標時間・タグを、アカウントに保存して引き継ぐ ========== */
+  const LS_META_OWNER = "si_qmeta_owner";   // 端末の設定が、誰のものか(別のアカウントに引き継がれないように)
+  async function syncMeta(qid) {
+    if (!(sb && state.user)) return;
+    const m = meta[qid];
+    const { error } = m
+      ? await sb.from("question_meta").upsert({ question_id: qid, target_seconds: m.target || null, tags: m.tags || [] }, { onConflict: "user_id,question_id" })
+      : await sb.from("question_meta").delete().eq("question_id", qid);
+    if (error) { console.warn(error); notify("アカウントへの保存に失敗しました(この端末には保存済みです)。Supabaseで step11 のSQLを実行済みか確認してください"); }
+  }
+  async function loadMeta() {
+    if (!(sb && state.user)) return;
+    let data, error;
+    try { ({ data, error } = await sb.from("question_meta").select("question_id,target_seconds,tags").limit(1000)); } catch (e) { error = e; }
+    if (error) { console.warn(error); return; }          // 表が無い(step11 未実行)場合は、この端末の設定のまま使う
+    const uid = state.user.id, syncedKey = "si_qmeta_synced_" + uid;
+    let owner = null, synced = false;
+    try { owner = localStorage.getItem(LS_META_OWNER); synced = localStorage.getItem(syncedKey) === "1"; } catch (_) {}
+    const server = {};
+    (data || []).forEach((r) => {
+      const m = {}; if (r.target_seconds > 0) m.target = r.target_seconds; if (r.tags && r.tags.length) m.tags = r.tags;
+      if (Object.keys(m).length) server[r.question_id] = m;
+    });
+    const local = owner && owner !== uid ? {} : { ...meta };     // 別のアカウントの設定は、引き継がない
+    if (!synced) {                                              // 初めて: この端末の設定のうち、アカウントに無いものを送る
+      const rows = Object.keys(local).filter((id) => !server[id]).map((id) => ({ question_id: id, target_seconds: local[id].target || null, tags: local[id].tags || [] }));
+      let ok = true;
+      if (rows.length) { const r = await sb.from("question_meta").upsert(rows, { onConflict: "user_id,question_id" }); if (r.error) { console.warn(r.error); ok = false; } }
+      if (ok) { rows.forEach((r) => { server[r.question_id] = local[r.question_id]; }); try { localStorage.setItem(syncedKey, "1"); } catch (_) {} }
+      else Object.assign(server, local, server);
+    }
+    Object.keys(meta).forEach((k) => delete meta[k]);
+    Object.assign(meta, server);
+    saveJSON(LS_META, meta);
+    try { localStorage.setItem(LS_META_OWNER, uid); } catch (_) {}
+    renderList(); renderTagFilter(); renderHistory();
+  }
+
   /* ========== 目標時間・タグの設定 ========== */
   function openMeta(qid) {
     const q = getQuestions().find((x) => x.id === qid); if (!q || !$("#metaDlg")) return;
@@ -1938,6 +2074,7 @@
       const m = {}; if (t > 0) m.target = t; if (tags.length) m.tags = tags;
       if (Object.keys(m).length) meta[qid] = m; else delete meta[qid];
       saveJSON(LS_META, meta);
+      syncMeta(qid);
       $("#metaDlg").hidden = true; state.metaFor = null;
       renderList(); renderTagFilter(); renderHistory();
       notify("目標時間・タグを保存しました");
@@ -2226,6 +2363,7 @@
     bindScriptUI();
     bindTutorialUI();
     bindMetaUI();
+    bindEditUI();
     bindExtraSettings();
     bindAnnouncementUI();
     if ($("#review")) bindReviewUI();
@@ -2244,6 +2382,8 @@
       if (del) { deleteQuestion(del.dataset.del); return; }
       const scr = e.target.closest("button.scr");
       if (scr) { openScript(scr.dataset.scr); return; }
+      const ed = e.target.closest("button.edit");
+      if (ed) { openEdit(ed.dataset.edit); return; }
       const mt = e.target.closest("button.meta");
       if (mt) { openMeta(mt.dataset.meta); return; }
       const btn = e.target.closest("button.play");
