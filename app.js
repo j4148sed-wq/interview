@@ -1569,6 +1569,55 @@
     } else if (wasLocked) {
       switchTab("practice");
     }
+    if (!locked) maybeTutorial();
+  }
+
+  /* ========== 初回ログイン時の使い方ガイド ========== */
+  const TUTORIAL = [
+    { tab: "practice", title: "ようこそ", body: "「セルフ面接練習」は、面接の質問を音声で聞き、声に出して答える練習ができるアプリです。ここから、使い方を1分ほどで説明します。" },
+    { tab: "practice", title: "練習する", body: "「練習」画面で出題モード(ランダム・順番・選んで出題)を選び、スタートを押すと、質問が音声で流れます。質問を聞いたら、声に出して答えてください。ランダムでは、深掘りの質問も出ます。" },
+    { tab: "list", title: "質問一覧と原稿", body: "「質問一覧」では、自分の質問を追加できます。各質問の「原稿」ボタンから、暗記したい回答の文章を登録できます。原稿はあなたのアカウントにだけ保存されます。" },
+    { tab: "account", title: "回答を録音して聞き返す", body: "「設定」で録音をオンにすると、回答が録音され、終了後にまとめて聞き返せます。録音はこの端末のメモリにだけ置かれ、聞き返し画面を閉じると削除されます。" },
+    { tab: "account", title: "AIで暗記を確認(ベータ版)", body: "原稿を登録した質問は、聞き返し画面で「原稿と照合する」を押すと、AIが録音を文字にして、原稿と比べます。音声は端末の外へ送られません。AIは完全ではなく、聞き間違いもあるため、結果は目安です。スマホでは、base の利用をおすすめします。" },
+    { tab: "account", title: "招待コード", body: "招待コードをお持ちの方は、「設定」から入力すると、追加の質問を受け取れます。招待コードの質問は、標準の質問とは別に出題されます。" },
+    { tab: "history", title: "記録", body: "回答にかかった時間は、「記録」画面に残ります。練習のたびに見直して、回答の長さを整えてください。" },
+  ];
+  const tut = { i: 0, shown: false };
+  function tutorialSeen() {
+    const u = state.user; if (!u) return true;
+    if (u.user_metadata?.tutorial_done) return true;
+    try { return localStorage.getItem("si_tut_" + u.id) === "1"; } catch (_) { return false; }
+  }
+  function maybeTutorial() {
+    if (tut.shown || !state.user || !$("#tutorial") || tutorialSeen()) return;
+    tut.shown = true; openTutorial(0);
+  }
+  function openTutorial(i) {
+    tut.i = i; const s = TUTORIAL[i], last = i === TUTORIAL.length - 1;
+    $("#tutorial").hidden = false;
+    $("#tutStep").textContent = `${i + 1} / ${TUTORIAL.length}`;
+    $("#tutTitle").textContent = s.title; $("#tutBody").textContent = s.body;
+    $("#tutBack").hidden = i === 0; $("#tutSkip").hidden = last;
+    $("#tutNext").textContent = last ? "はじめる" : "次へ";
+    $("#tutDots").innerHTML = TUTORIAL.map((_, k) => `<span class="${k === i ? "on" : ""}"></span>`).join("");
+    switchTab(s.tab);
+    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("tut-hl", t.dataset.tab === s.tab));
+    $("#tutNext").focus();
+  }
+  async function closeTutorial(markDone) {
+    $("#tutorial").hidden = true;
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("tut-hl"));
+    switchTab("practice");
+    if (!markDone || !state.user) return;
+    try { localStorage.setItem("si_tut_" + state.user.id, "1"); } catch (_) {}
+    try { await sb.auth.updateUser({ data: { tutorial_done: true } }); } catch (e) { console.warn(e); }
+  }
+  function bindTutorialUI() {
+    if (!$("#tutorial")) return;
+    $("#tutNext").onclick = () => { if (tut.i >= TUTORIAL.length - 1) closeTutorial(true); else openTutorial(tut.i + 1); };
+    $("#tutBack").onclick = () => { if (tut.i > 0) openTutorial(tut.i - 1); };
+    $("#tutSkip").onclick = () => closeTutorial(true);
+    if ($("#tutReopen")) $("#tutReopen").onclick = () => openTutorial(0);
   }
 
   // 表示する記録を、ログイン状態に合わせて読み込み直す
@@ -1798,6 +1847,7 @@
       $("#sttModel").onchange = (e) => { note(); state.settings.sttModel = e.target.value; saveJSON(LS_SETTINGS, state.settings); stopStt(); };
     }
     bindScriptUI();
+    bindTutorialUI();
     if ($("#review")) bindReviewUI();
     $("#showTitle").onchange = (e) => { state.settings.showTitle = e.target.checked; saveJSON(LS_SETTINGS, state.settings); setPhase(state.phase); };
 

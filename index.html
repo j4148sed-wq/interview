@@ -187,6 +187,7 @@
           </dl>
           <div class="fields">
             <button id="migrateBtn" class="ghost" hidden></button>
+            <button id="tutReopen" class="ghost" type="button">使い方を見る</button>
             <button id="logoutBtn" class="ghost">ログアウト</button>
           </div>
           <p class="hint" style="margin-top:12px"><a href="terms.html" target="_blank" rel="noopener">利用規約を読む</a></p>
@@ -317,6 +318,21 @@
       </div>
     </section>
   </main>
+
+    <!-- 初回ログイン時の使い方ガイド -->
+  <div id="tutorial" class="review tutorial" role="dialog" aria-modal="true" aria-labelledby="tutTitle" hidden>
+    <div class="review-box tut-box">
+      <p class="hint" id="tutStep"></p>
+      <h2 id="tutTitle"></h2>
+      <p id="tutBody"></p>
+      <div id="tutDots" class="tut-dots" aria-hidden="true"></div>
+      <div class="tut-actions">
+        <button id="tutBack" class="ghost" type="button">戻る</button>
+        <button id="tutSkip" class="ghost" type="button">スキップ</button>
+        <button id="tutNext" class="primary" type="button">次へ</button>
+      </div>
+    </div>
+  </div>
 
     <!-- 原稿の入力 -->
   <div id="scriptDlg" class="review" role="dialog" aria-modal="true" aria-labelledby="scriptTitle" hidden>

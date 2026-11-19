@@ -272,3 +272,14 @@ button.scr { flex: none; background: none; border: 1px solid var(--line); color:
 .beta { display: inline-block; font-size: .7rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; color: #b26a00; vertical-align: middle; }
 .beta-note { color: #b26a00; }
 @media (prefers-color-scheme: dark) { .beta, .beta-note { color: #ffb74d; } }
+
+/* 使い方ガイド(画面の下側に出し、背後の画面が見えるようにする) */
+.tutorial { align-items: flex-end; background: rgba(0,0,0,.35); }
+.tut-box { grid-template-rows: none; max-width: 520px; margin-bottom: 8px; overflow: auto; }
+.tut-box p { margin: 0; line-height: 1.7; }
+.tut-dots { display: flex; gap: 6px; justify-content: center; }
+.tut-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--line, #999); opacity: .5; }
+.tut-dots span.on { background: var(--accent); opacity: 1; }
+.tut-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.tut-actions button { width: auto; min-width: 88px; }
+.tab.tut-hl { outline: 3px solid var(--accent); outline-offset: -3px; }
