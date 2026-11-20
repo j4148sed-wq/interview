@@ -133,10 +133,10 @@
             <select id="qParent"></select>
           </label>
           <div class="rec">
-            <label>音声ファイルを選ぶ(MP3・M4Aなど / 10MBまで)
+            <label>音声ファイルを選ぶ(任意・MP3・M4Aなど / 10MBまで)
               <input id="qFile" type="file" accept="audio/*,.mp3,.m4a">
             </label>
-            <p class="or">または、その場で録音する</p>
+            <p class="or">または、その場で録音する(音声がない場合は、質問文が自動音声で読み上げられます)</p>
             <button type="button" id="recStart" class="ghost">● 録音する</button>
             <div id="recStopWrap" class="rec-row" hidden>
               <button type="button" id="recStop" class="primary rec-on">■ 録音を止める</button>
@@ -416,6 +416,7 @@
           <audio id="editPreview" controls></audio>
           <button type="button" id="editRecRedo" class="ghost">録り直す</button>
         </div>
+        <label id="editRemoveWrap" class="check"><input type="checkbox" id="editRemove"> 音声を使わない(質問文を自動音声で読み上げる)</label>
       </div>
       <p id="editMsg" class="notice" role="status" aria-live="polite"></p>
       <button id="editSave" class="primary" type="button">保存</button>

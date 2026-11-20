@@ -1086,24 +1086,25 @@
     }
 
     if (!title) return listMsg("質問文を入力してください。");
-    if (!source) return listMsg("音声ファイルを選ぶか、録音してください。");
-    if (source.size > MAX_FILE) return listMsg("ファイルが大きすぎます(10MBまで)。");
+    if (source && source.size > MAX_FILE) return listMsg("ファイルが大きすぎます(10MBまで)。");
     if (state.userQuestions.length >= MAX_QUESTIONS) return listMsg(`追加できる質問は${MAX_QUESTIONS}件までです。`);
 
     const btn = $("#addBtn");
     btn.disabled = true;
     listMsg("アップロード中…");
     try {
-      const uid = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
-      const path = `${state.user.id}/${uid}.${ext}`;
-
-      const up = await sb.storage.from(BUCKET).upload(path, source, { contentType, upsert: false });
-      if (up.error) { console.warn(up.error); return listMsg(`アップロードに失敗しました: ${up.error.message}`); }
+      let path = null;                    // 音声がない質問は、質問文が自動音声で読み上げられる
+      if (source) {
+        const uid = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+        path = `${state.user.id}/${uid}.${ext}`;
+        const up = await sb.storage.from(BUCKET).upload(path, source, { contentType, upsert: false });
+        if (up.error) { console.warn(up.error); return listMsg(`アップロードに失敗しました: ${up.error.message}`); }
+      }
 
       const ins = await sb.from("user_questions").insert({ title, audio_path: path, parent_id: parent });
       if (ins.error) {
         console.warn(ins.error);
-        await sb.storage.from(BUCKET).remove([path]); // 登録に失敗したら、アップロードしたファイルも消す
+        if (path) await sb.storage.from(BUCKET).remove([path]); // 登録に失敗したら、アップロードしたファイルも消す
         return listMsg(`登録に失敗しました: ${ins.error.message}`);
       }
       $("#addForm").reset();
@@ -1122,7 +1123,7 @@
     const n = ids.length - 1;
     const text = n ? `「${q.title}」と、その深掘り質問${n}件を削除します。よろしいですか?` : `「${q.title}」を削除します。よろしいですか?`;
     if (!confirm(text)) return;
-    const paths = state.userQuestions.filter((x) => ids.includes(x.id) && x.audio_bucket !== "pack-audio").map((x) => x.audio_path);
+    const paths = state.userQuestions.filter((x) => ids.includes(x.id) && x.audio_bucket !== "pack-audio" && x.audio_path).map((x) => x.audio_path);
     const { error } = await sb.from("user_questions").delete().in("id", ids);
     if (error) { listMsg(`削除に失敗しました: ${error.message}`); return; }
     sb.from("question_scripts").delete().in("question_id", ids).then(() => {}, () => {});   // 原稿も消す(失敗しても続行)
@@ -1939,6 +1940,7 @@
       flatten().filter((x) => !banned.has(x.id)).map((x) => `<option value="${esc(x.id)}">${"　".repeat(x.depth)}${esc(x.title)}</option>`).join("");
     $("#editParent").value = q.parent_id && [...$("#editParent").options].some((o) => o.value === q.parent_id) ? q.parent_id : "";
     $("#editFile").value = "";
+    $("#editRemove").checked = false; $("#editRemoveWrap").hidden = !q.audio_path;
     $("#editDlg").hidden = false; $("#editTitle").focus();
   }
   function closeEdit() { editRecReset(); edit.id = null; $("#editDlg").hidden = true; }
@@ -1949,6 +1951,7 @@
     if (!title) return editMsg("質問文を入力してください。");
     const file = edit.blob ? null : $("#editFile").files[0];
     const source = edit.blob || file;
+    const removeAudio = !source && $("#editRemove").checked;
     let path = null, ext, contentType;
     if (source) {
       if (edit.blob) {
@@ -1969,7 +1972,7 @@
         const up = await sb.storage.from(BUCKET).upload(path, source, { contentType, upsert: false });
         if (up.error) { console.warn(up.error); path = null; return editMsg(`アップロードに失敗しました: ${up.error.message}`); }
       }
-      const { data, error } = await sb.rpc("update_my_question", { p_id: q.id, p_title: title, p_parent: $("#editParent").value || null, p_audio_path: path });
+      const { data, error } = await sb.rpc("update_my_question", { p_id: q.id, p_title: title, p_parent: $("#editParent").value || null, p_audio_path: path, p_remove_audio: removeAudio });
       if (error) {
         console.warn(error);
         if (path) await sb.storage.from(BUCKET).remove([path]);       // 失敗したら、アップロードしたファイルも消す
@@ -1986,7 +1989,7 @@
     if (!$("#editDlg")) return;
     $("#editClose").onclick = closeEdit;
     $("#editSave").onclick = saveEdit;
-    $("#editFile").onchange = () => { if ($("#editFile").files[0]) editRecReset(); };
+    $("#editFile").onchange = () => { if ($("#editFile").files[0]) { editRecReset(); $("#editRemove").checked = false; } };
     $("#editRecStart").onclick = async () => {
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return editMsg("この環境では録音できません。");
       editRecReset(); $("#editFile").value = "";

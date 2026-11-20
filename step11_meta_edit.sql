@@ -67,9 +67,11 @@ end $$;
 --    update を直接は許可せず、この関数だけが更新できる。
 --    招待コード由来の質問(限定音声)は、編集できない。
 -------------------------------------------------------------------------------
+-- 引数を増やしたため、古い版(4引数)は消す
+drop function if exists public.update_my_question(uuid, text, text, text);
 create or replace function public.update_my_question(
-  p_id uuid, p_title text, p_parent text, p_audio_path text default null
-) returns text   -- 差し替え前の音声ファイルのパス(Storageから消すために返す)。差し替えなしなら null
+  p_id uuid, p_title text, p_parent text, p_audio_path text default null, p_remove_audio boolean default false
+) returns text   -- 差し替え・削除する前の音声ファイルのパス(Storageから消すために返す)。変更なしなら null
 language plpgsql security definer set search_path = public as $$
 declare
   v_uid uuid := auth.uid();
@@ -99,10 +101,13 @@ begin
     ) then raise exception 'bad_parent'; end if;
   end if;
 
+  -- 音声なし(質問文を自動音声で読み上げる質問)にもできる
   update public.user_questions
-     set title = v_title, parent_id = v_parent, audio_path = coalesce(p_audio_path, audio_path)
+     set title = v_title, parent_id = v_parent,
+         audio_path = case when p_audio_path is not null then p_audio_path when coalesce(p_remove_audio, false) then null else audio_path end
    where id = p_id and user_id = v_uid;
-  return case when p_audio_path is not null and p_audio_path is distinct from v_row.audio_path then v_row.audio_path end;
+  return case when p_audio_path is not null and p_audio_path is distinct from v_row.audio_path then v_row.audio_path
+              when p_audio_path is null and coalesce(p_remove_audio, false) then v_row.audio_path end;
 end $$;
-revoke all on function public.update_my_question(uuid, text, text, text) from public, anon;
-grant execute on function public.update_my_question(uuid, text, text, text) to authenticated;
+revoke all on function public.update_my_question(uuid, text, text, text, boolean) from public, anon;
+grant execute on function public.update_my_question(uuid, text, text, text, boolean) to authenticated;
