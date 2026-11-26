@@ -917,7 +917,7 @@
     state.examSummary = isExam() && L.length
       ? `本番モードの結果: ${L.length}問 / 平均 ${fmt(L.reduce((s, x) => s + x.sec, 0) / L.length)} / 目標時間を超えた質問 ${L.filter((x) => x.tg > 0 && x.sec > x.tg).length}問` : "";
     setPhase("done");
-    switchTab("history");
+    try { switchTab("history"); } catch (e) { console.warn(e); }   // 画面の表示で失敗しても、聞き返しの画面は必ず出す
     discardAnswerRec(); releaseMic();
     openReview();          // 録音があれば、聞き返しの画面を(閉じられない形で)出す
   }
@@ -953,7 +953,7 @@
           $("#timer").textContent = fmt(sec);
           if (isExam()) (state.examLog = state.examLog || []).push({ sec, tg: qTarget(cur.id) });
           await saveAnswer(cur, sec);
-          renderStreak();
+          try { renderStreak(); } catch (e) { console.warn(e); }
         }
       } finally { state.saving = false; }
       // これが最後の質問だった場合は、保存したあと、自動で記録ページへ移る
@@ -1142,7 +1142,8 @@
   function renderHistory() {
     $("#doneNote").hidden = !state.justFinished;
     $("#doneNote").textContent = "すべての質問が終了しました。お疲れさまでした。今回の回答時間は、下の「最近の記録」に残っています。" + (state.justFinished && state.examSummary ? "\n" + state.examSummary : "");
-    renderStreak(); renderCharts();
+    try { renderStreak(); } catch (e) { console.warn(e); }
+    try { renderCharts(); } catch (e) { console.warn(e); }
     $("#historySource").textContent = state.user
       ? "保存先: アカウント(どの端末からでも見られます)"
       : "保存先: この端末のみ(ログインすると、アカウントに保存できます)";
@@ -1918,6 +1919,96 @@
     };
   }
 
+  /* ========== Excelの問答集から、質問と原稿をまとめて取り込む ========== */
+  const xl = { items: [] };
+  const xlMsg = (t) => { $("#xlMsg").textContent = t; };
+  // 取り込む内容の判定: 同じ質問文・同じ親の「自分の質問」があれば、原稿だけを更新する。なければ、質問を新しく作る
+  function xlPlan() {
+    const rows = [...document.querySelectorAll("#xlList li")];
+    const ids = new Map(), plan = [];
+    xl.items.forEach((it, i) => {
+      const li = rows[i], on = li.querySelector("input[type=checkbox]").checked;
+      const title = li.querySelector("input[type=text]").value.trim().slice(0, 200);
+      const parentId = it.parent >= 0 ? ids.get(it.parent) ?? null : null;
+      const exist = title ? state.userQuestions.find((q) => !q.imported && q.title === title && (q.parent_id || null) === (parentId || null)) : null;
+      const id = exist ? exist.id : (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+      ids.set(i, on ? id : null);
+      const same = exist && state.scripts.get(exist.id) === it.script;
+      plan.push({ i, on: on && !!title, title, id, parentId, isNew: !exist, same: !!same, script: it.script });
+    });
+    return plan;
+  }
+  function xlRefresh() {
+    const plan = xlPlan();
+    document.querySelectorAll("#xlList li").forEach((li, i) => {
+      const p = plan[i];
+      li.querySelector(".xl-st").textContent = !p.on ? "取り込まない" : p.isNew ? "新規" : p.same ? "変更なし" : "原稿を更新";
+      li.classList.toggle("off", !p.on);
+    });
+    const act = plan.filter((p) => p.on && !(p.same));
+    const newQ = act.filter((p) => p.isNew).length;
+    const newS = act.filter((p) => !state.scripts.has(p.id)).length;
+    const roomQ = MAX_QUESTIONS - state.userQuestions.length, roomS = 200 - state.scripts.size;
+    const over = newQ > roomQ ? `追加できる質問は、あと${roomQ}件です。` : newS > roomS ? `保存できる原稿は、あと${roomS}件です。` : "";
+    $("#xlSummary").textContent = `質問を${newQ}件追加し、原稿を${act.length}件保存します。${over ? " " + over : ""}`;
+    $("#xlGo").disabled = !act.length || !!over;
+  }
+  async function xlRead(file) {
+    xlMsg(""); $("#xlPreview").hidden = true;
+    if (!file) return;
+    if (!/\.xlsx$/i.test(file.name)) return xlMsg("Excelファイル(.xlsx)を選んでください。");
+    if (file.size > 10 * 1024 * 1024) return xlMsg("ファイルが大きすぎます(10MBまで)。");
+    xlMsg("読み込んでいます…");
+    try {
+      const sheets = await XlsxImport.readXlsx(await file.arrayBuffer());
+      xl.items = XlsxImport.parseQA(sheets);
+    } catch (e) {
+      console.warn(e);
+      return xlMsg(e.message === "unsupported" ? "このブラウザでは、Excelを読み込めません。新しいバージョンのブラウザ(iPhoneなら iOS 16.4 以降)でお試しください。" : "ファイルを読み込めませんでした。問答集のExcelファイル(.xlsx)か確認してください。");
+    }
+    if (!xl.items.length) return xlMsg("質問と回答が見つかりませんでした。書式(B列に質問と回答、C列に文字数の数式)を確認してください。");
+    $("#xlList").innerHTML = xl.items.map((it) => `<li>
+      <label class="xl-row"><input type="checkbox" checked aria-label="取り込む">
+        <span class="xl-main">${it.parent >= 0 ? '<span class="xl-ind">└</span>' : ""}<input type="text" maxlength="200" value="${esc(it.title)}" aria-label="質問文"></span>
+        <span class="xl-st"></span></label>
+      <small class="xl-sc">原稿 ${it.script.length}字: ${esc(it.script.slice(0, 40))}${it.script.length > 40 ? "…" : ""}</small></li>`).join("");
+    $("#xlPreview").hidden = false;
+    xlMsg(`${xl.items.length}件の質問と原稿が見つかりました。内容を確認して、「取り込む」を押してください。`);
+    xlRefresh();
+  }
+  async function xlImport() {
+    if (!sb || !state.user) return;
+    const plan = xlPlan().filter((p) => p.on && !p.same);
+    if (!plan.length) return;
+    const btn = $("#xlGo"); btn.disabled = true; xlMsg("取り込んでいます…");
+    try {
+      const base = Date.now();
+      const qRows = plan.filter((p) => p.isNew).map((p, k) => ({ id: p.id, title: p.title, audio_path: null, parent_id: p.parentId, created_at: new Date(base + k).toISOString() }));
+      if (qRows.length) {
+        const ins = await sb.from("user_questions").insert(qRows);
+        if (ins.error) { console.warn(ins.error); return xlMsg(`質問の追加に失敗しました: ${ins.error.message}`); }
+      }
+      const sc = await sb.from("question_scripts").upsert(plan.map((p) => ({ question_id: p.id, script: p.script })), { onConflict: "user_id,question_id" });
+      if (sc.error) {
+        console.warn(sc.error);
+        await refreshQuestions();
+        return xlMsg(`質問は追加しましたが、原稿の保存に失敗しました: ${sc.error.message}`);
+      }
+      plan.forEach((p) => state.scripts.set(p.id, p.script));
+      $("#xlPreview").hidden = true; $("#xlFile").value = ""; xl.items = [];
+      xlMsg(`取り込みました。質問を${qRows.length}件追加し、原稿を${plan.length}件保存しました。`);
+      await refreshQuestions();
+    } finally { btn.disabled = false; }
+  }
+  function bindXlUI() {
+    if (!$("#xlFile")) return;
+    $("#xlFile").onchange = (e) => xlRead(e.target.files[0]);
+    $("#xlList").addEventListener("input", xlRefresh);
+    $("#xlList").addEventListener("change", xlRefresh);
+    $("#xlAll").onclick = () => { const boxes = [...document.querySelectorAll("#xlList input[type=checkbox]")]; const on = boxes.some((b) => !b.checked); boxes.forEach((b) => { b.checked = on; }); xlRefresh(); };
+    $("#xlGo").onclick = xlImport;
+  }
+
   /* ========== 自分の質問の編集(質問文・親の質問・音声の差し替え) ========== */
   const edit = { id: null, rec: null, stream: null, chunks: [], blob: null, tick: null, url: null };
   const EDIT_ERR = { not_found: "質問が見つかりません。", not_editable: "招待コードの質問は、編集できません。", bad_title: "質問文は1〜200文字で入力してください。", bad_parent: "その質問は、親にできません(自分自身か、自分の深掘り質問です)。", bad_audio: "音声ファイルの保存先が正しくありません。", maintenance: "ただいまメンテナンス中です。" };
@@ -2367,6 +2458,7 @@
     bindTutorialUI();
     bindMetaUI();
     bindEditUI();
+    bindXlUI();
     bindExtraSettings();
     bindAnnouncementUI();
     if ($("#review")) bindReviewUI();

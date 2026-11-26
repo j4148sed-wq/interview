@@ -329,3 +329,15 @@ button.meta { background: transparent; border: 1px solid var(--line); border-rad
 .maint-box h2 { margin: 0; }
 .maint-box p { margin: 0; line-height: 1.8; white-space: pre-wrap; }
 button.edit { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color: var(--ink); cursor: pointer; font-size: .85rem; }
+
+/* Excel取り込み */
+.xl-rules { margin: 0 0 8px; padding-left: 1.2em; }
+.xl-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
+.xl-list li { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--surface); }
+.xl-list li.off { opacity: .5; }
+.xl-row { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; }
+.xl-main { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.xl-main input { width: 100%; min-width: 0; }
+.xl-ind { color: var(--muted); }
+.xl-st { font-size: .72rem; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.xl-sc { display: block; margin-top: 4px; color: var(--muted); font-size: .75rem; word-break: break-all; }

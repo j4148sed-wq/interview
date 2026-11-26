@@ -151,6 +151,25 @@
         </form>
         <p id="addMsg" class="notice" role="status" aria-live="polite"></p>
       </div>
+
+      <div class="card" id="xlCard">
+        <h2>Excelの問答集から取り込む</h2>
+        <p class="hint">「面接問答集」のExcelファイル(.xlsx)を選ぶと、B列の質問と回答から、質問と原稿を自動で作ります。ファイルは、この端末の中で読み取り、質問と原稿だけがあなたのアカウントに保存されます。</p>
+        <ul class="hint xl-rules">
+          <li>質問は、音声なし(自動音声)の「自分の質問」として追加されます。</li>
+          <li>回答は、その質問の「原稿」になります。回答が複数の行に分かれている場合は、つなげます。</li>
+          <li>A列に A〜E と書かれた質問は、A の深掘り質問(B〜E)として追加されます。</li>
+          <li>同じ質問文の質問がすでにある場合は、原稿だけを更新します(添削後の取り込み直しにも使えます)。</li>
+        </ul>
+        <input id="xlFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        <p id="xlMsg" class="notice" role="status" aria-live="polite"></p>
+        <div id="xlPreview" hidden>
+          <p id="xlSummary" class="hint"></p>
+          <button type="button" id="xlAll" class="ghost">すべて選ぶ / すべて外す</button>
+          <ul id="xlList" class="xl-list"></ul>
+          <button type="button" id="xlGo" class="primary">取り込む</button>
+        </div>
+      </div>
     </section>
 
     <!-- 記録 -->
@@ -494,6 +513,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.js"></script>
   <script src="config.js"></script>
   <script src="data/questions.js"></script>
+  <script src="xlsx-import.js"></script>
   <script src="app.js"></script>
   <script>
     // PWA: https(または localhost)で開いた時だけ Service Worker を登録する
