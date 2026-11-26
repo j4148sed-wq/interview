@@ -852,6 +852,7 @@
     title.textContent = q && !isExam() && (state.settings.showTitle || state.forceTitle) && phase !== "done" ? q.title : "";
     $("#replayBtn").hidden = isExam() || !(q && (phase === "playing" || phase === "answering"));
     next.classList.toggle("next", phase === "answered");
+    $("#endBtn").hidden = !(phase === "answered" && state.settings.mode !== "pick");   // 途中で切り上げて、記録と聞き返しへ進む
 
     if (phase === "idle") {
       status.textContent = state.settings.mode === "pick"
@@ -2464,6 +2465,7 @@
     if ($("#review")) bindReviewUI();
     $("#showTitle").onchange = (e) => { state.settings.showTitle = e.target.checked; saveJSON(LS_SETTINGS, state.settings); setPhase(state.phase); };
 
+    $("#endBtn").onclick = () => { if (state.phase === "answered" && !state.saving) finishSession(); };
     $("#nextBtn").onclick = () => {
       if (state.settings.mode === "pick" && (state.phase === "idle" || state.phase === "done")) return switchTab("list");
       onNext();
